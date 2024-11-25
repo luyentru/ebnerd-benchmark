@@ -32,8 +32,9 @@ from ebrec.utils._articles import convert_text2encoding_with_transformers
 from ebrec.utils._polars import (
     slice_join_dataframes,
     concat_str_columns,
-    chunk_dataframe,
-    split_df,
+    #chunk_dataframe,
+    split_df_chunks,
+    split_df_fraction,
 )
 from ebrec.utils._articles import create_article_id_to_value_mapping
 from ebrec.utils._nlp import get_transformers_word_embeddings
@@ -45,6 +46,7 @@ from ebrec.models.newsrec import NRMSModel
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 gpus = tf.config.experimental.list_physical_devices("GPU")
+print(gpus)
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 
@@ -80,8 +82,8 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     return df_behaviors
 
 
-PATH = Path("~/ebnerd_data").expanduser()
-DUMP_DIR = Path("ebnerd_predictions")
+PATH = Path("/zhome/8f/a/215532/recsys_challenge/nrms_tensorflow_slim/ebnerd_data").resolve()
+DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)
 SEED = np.random.randint(0, 1_000)
 
@@ -99,7 +101,7 @@ DATASPLIT = "ebnerd_small"
 MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
 FRACTION = 1.0
-EPOCHS = 5
+EPOCHS = 1
 FRACTION_TEST = 1.0
 #
 hparams_nrms.history_size = HISTORY_SIZE
@@ -132,7 +134,7 @@ df_train = (
     )
     .pipe(create_binary_labels_column)
 )
-df_train, df_validation = split_df(df_train, fraction=0.9, seed=SEED, shuffle=False)
+df_train, df_validation = split_df_fraction(df_train, fraction=0.9, seed=SEED, shuffle=False)
 
 # df_test = df_validation
 # df_train = df_train[:100]
@@ -232,7 +234,7 @@ df_test = (
 df_test_wo_beyond = df_test.filter(~pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 df_test_w_beyond = df_test.filter(pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 
-df_test_chunks = chunk_dataframe(df_test_wo_beyond, n_chunks=N_CHUNKS_TEST)
+df_test_chunks = split_df_chunks(df_test_wo_beyond, n_chunks=N_CHUNKS_TEST)
 df_pred_test_wo_beyond = []
 
 for i, df_test_chunk in enumerate(df_test_chunks[CHUNKS_DONE:], start=1 + CHUNKS_DONE):

@@ -8,7 +8,7 @@ Hello there 👋🏽
 
 We recommend to check the repository frequently, as we are updating and documenting it along the way!
 
-## EBNeRD 
+## EBNeRD - Forked version
 Ekstra Bladet Recommender System repository, created for the RecSys'24 Challenge. 
 
 # Getting Started

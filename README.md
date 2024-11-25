@@ -5,6 +5,26 @@
 
 //this is now our fork
 
+# Beats Instructions
+
+# Access GPU
+a100sh
+
+# set-up/load venv 
+python -m venv venv # only first time
+source venv/bin/activate
+pip install . # only first time
+
+# move cd to /quick_examples
+ 
+# use correct GPU
+module load cuda/12.2
+export XLA_FLAGS=--xla_gpu_cuda_data_dir=$CUDA_HOME
+
+# run file 
+python nrms_ebnerd.py
+
+
 
 # Introduction
 Hello there 👋🏽

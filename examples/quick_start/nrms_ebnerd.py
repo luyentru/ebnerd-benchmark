@@ -82,7 +82,7 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     return df_behaviors
 
 
-PATH = Path("/zhome/8f/a/215532/recsys_challenge/nrms_tensorflow_slim/ebnerd_data").resolve()
+PATH = Path("../../../recsys_challenge/ebnerd_data").resolve()
 DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)
 SEED = np.random.randint(0, 1_000)

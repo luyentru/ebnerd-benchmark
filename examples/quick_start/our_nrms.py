@@ -53,6 +53,8 @@ for gpu in gpus:
 # conda activate ./venv/
 # python -i examples/00_quick_start/nrms_ebnerd.py
 
+DEBUG = 1
+
 
 def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     """
@@ -102,7 +104,7 @@ MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
 TITLE_SIZE = 30
 FRACTION = 1.0
-EPOCHS = 2
+EPOCHS = 2 if DEBUG else 20
 FRACTION_TEST = 1.0
 
 BATCH_SIZE_TRAIN = 32
@@ -173,10 +175,11 @@ df = (
     .pipe(create_binary_labels_column)
 )
 
-# We keep the last day of our training data as the validation set.
-last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=1)
+# We keep the last 6 days of our training data as the validation set.
+last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=6)
 df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)
 df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= last_dt)
+
 
 df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
 #df_train, df_validation = split_df_fraction(df_train, fraction=0.9, seed=SEED, shuffle=False)
@@ -184,9 +187,11 @@ df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
 '''
 Use these subsets for debugging purposes/to test correctness of your code
 '''
-#df_train = df_train[:100]
-#df_validation = df_validation[:100]
-#df_articles = df_articles[:100]
+if DEBUG:
+    df_train = df_train[:1000]
+    df_validation = df_validation[:1000]
+    df_articles = df_articles[:10000]
+
 
 # =>
 TRANSFORMER_MODEL_NAME = "FacebookAI/xlm-roberta-base"
@@ -221,7 +226,7 @@ val_dataloader = NRMSDataLoaderPretransform(
     article_dict=article_mapping,
     unknown_representation="zeros",
     history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
-    eval_mode=True,
+    eval_mode=False,
     batch_size=BATCH_SIZE_VAL,
 )
 
@@ -229,11 +234,11 @@ val_dataloader = NRMSDataLoaderPretransform(
     so we can train the model and save it weights
 '''
 # CALLBACKS
-# tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=LOG_DIR, histogram_freq=1)
-# early_stopping = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=2)
-# modelcheckpoint = tf.keras.callbacks.ModelCheckpoint(
-#     filepath=MODEL_WEIGHTS, save_best_only=True, save_weights_only=True, verbose=1
-# )
+tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=LOG_DIR, histogram_freq=1)
+early_stopping = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=2)
+modelcheckpoint = tf.keras.callbacks.ModelCheckpoint(
+    filepath=MODEL_WEIGHTS, save_best_only=True, save_weights_only=True, verbose=1
+)
 
 model = NRMSModel(
     hparams=hparams_nrms,
@@ -244,9 +249,10 @@ hist = model.model.fit(
     train_dataloader,
     validation_data=val_dataloader,
     epochs=EPOCHS,
-    #callbacks=[tensorboard_callback, early_stopping],
+    callbacks=[tensorboard_callback, early_stopping],
 )
 
+val_dataloader.eval_mode = True
 scores = model.scorer.predict(val_dataloader)
 df_validation = add_prediction_scores(df_validation, scores.tolist()).with_columns(
         pl.col("scores")
@@ -270,12 +276,12 @@ del (
     df_train,
 )
 gc.collect()
-#print(f"saving model: {MODEL_WEIGHTS}")
-#model.model.save_weights(MODEL_WEIGHTS)
-#print(f"loading model: {MODEL_WEIGHTS}")
-#model.model.load_weights(MODEL_WEIGHTS)
 
-exit()
+if not DEBUG:
+    print(f"saving model: {MODEL_WEIGHTS}")
+    model.model.save_weights(MODEL_WEIGHTS)
+    print(f"loading model: {MODEL_WEIGHTS}")
+    model.model.load_weights(MODEL_WEIGHTS)
 
 # =>
 print("Init df_test")
@@ -298,7 +304,9 @@ df_test = (
 df_test_wo_beyond = df_test.filter(~pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 df_test_w_beyond = df_test.filter(pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 
-df_test_wo_beyond = df_test_wo_beyond[:100]
+if DEBUG:
+    df_test_wo_beyond = df_test_wo_beyond[:10]
+    df_test_w_beyond = df_test_w_beyond[:10]
 
 df_test_chunks = split_df_chunks(df_test_wo_beyond, n_chunks=N_CHUNKS_TEST)
 df_pred_test_wo_beyond = []
@@ -343,36 +351,37 @@ df_pred_test_wo_beyond.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_
     TEST_DF_DUMP.joinpath("pred_wo_ba.parquet")
 )
 
-# print("Init test-dataloader: beyond-accuracy")
-# test_dataloader_w_b = NRMSDataLoader(
-#     behaviors=df_test_w_beyond,
-#     article_dict=article_mapping,
-#     unknown_representation="zeros",
-#     history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
-#     eval_mode=True,
-#     batch_size=BATCH_SIZE_TEST_W_B,
-# )
-# scores = model.scorer.predict(test_dataloader_w_b)
-# df_pred_test_w_beyond = add_prediction_scores(
-#     df_test_w_beyond, scores.tolist()
-# ).with_columns(
-#     pl.col("scores")
-#     .map_elements(lambda x: list(rank_predictions_by_score(x)))
-#     .alias("ranked_scores")
-# )
-# df_pred_test_w_beyond.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
-#     TEST_DF_DUMP.joinpath("pred_w_ba.parquet")
-# )
+print("Init test-dataloader: beyond-accuracy")
+test_dataloader_w_b = NRMSDataLoader(
+    behaviors=df_test_w_beyond,
+    article_dict=article_mapping,
+    unknown_representation="zeros",
+    history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
+    eval_mode=True,
+    batch_size=BATCH_SIZE_TEST_W_B,
+)
+scores = model.scorer.predict(test_dataloader_w_b)
+df_pred_test_w_beyond = add_prediction_scores(
+    df_test_w_beyond, scores.tolist()
+).with_columns(
+    pl.col("scores")
+    .map_elements(lambda x: list(rank_predictions_by_score(x)))
+    .alias("ranked_scores")
+)
+df_pred_test_w_beyond.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
+    TEST_DF_DUMP.joinpath("pred_w_ba.parquet")
+)
 
-# # =>
-# df_test = pl.concat([df_pred_test_wo_beyond, df_pred_test_w_beyond])
-# df_test.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
-#     TEST_DF_DUMP.joinpath("pred_concat.parquet")
-# )
+# =>
+df_test = pl.concat([df_pred_test_wo_beyond, df_pred_test_w_beyond])
+df_test.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
+    TEST_DF_DUMP.joinpath("pred_concat.parquet")
+)
 
-# write_submission_file(
-#     impression_ids=df_test[DEFAULT_IMPRESSION_ID_COL],
-#     prediction_scores=df_test["ranked_scores"],
-#     path=DUMP_DIR.joinpath("predictions.txt"),
-#     filename_zip=f"{DATASPLIT}_predictions-{MODEL_NAME}.zip",
-# )
+if not DEBUG:
+    write_submission_file(
+        impression_ids=df_test[DEFAULT_IMPRESSION_ID_COL],
+        prediction_scores=df_test["ranked_scores"],
+        path=DUMP_DIR.joinpath("predictions.txt"),
+        filename_zip=f"{DATASPLIT}_predictions-{MODEL_NAME}.zip",
+    )

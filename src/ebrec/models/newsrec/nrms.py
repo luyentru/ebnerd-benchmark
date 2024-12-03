@@ -53,30 +53,6 @@ class NRMSModel:
         )
         self.model.compile(loss=data_loss, optimizer=train_optimizer)
 
-
-    def _get_positional_encoding(self, position, embed_dim):
-        """Generate sinusoidal positional encodings.
-
-        Args:
-            position (int): Maximum sequence length.
-            embed_dim (int): Embedding dimension.
-
-        Returns:
-            tf.Tensor: A tensor of shape (position, embed_dim) with positional encodings.
-        """
-        # Ensure consistent dtypes by casting tf.range to tf.float32
-        angle_rads = tf.cast(tf.range(position)[:, tf.newaxis], tf.float32) / tf.pow(
-            10000.0, (2 * (tf.cast(tf.range(embed_dim // 2)[tf.newaxis, :], tf.float32))) / tf.cast(embed_dim, tf.float32)
-        )
-        # Apply sin to even indices
-        sines = tf.math.sin(angle_rads)
-        # Apply cos to odd indices
-        cosines = tf.math.cos(angle_rads)
-        # Concatenate sin and cos along the last axis
-        positional_encoding = tf.concat([sines, cosines], axis=-1)
-        return positional_encoding
-
-
     def _get_loss(self, loss: str):
         """Make loss function, consists of data loss and regularization loss
         Returns:
@@ -89,7 +65,6 @@ class NRMSModel:
         else:
             raise ValueError(f"this loss not defined {loss}")
         return data_loss
-
 
     def _get_opt(self, optimizer: str, lr: float):
         """Get the optimizer according to configuration. Usually we will use Adam.
@@ -157,13 +132,6 @@ class NRMSModel:
             shape=(self.hparams.title_size,), dtype="int32"
         )
         embedded_sequences_title = embedding_layer(sequences_input_title)
-
-        # generate positional encodings
-        positional_encoding = self._get_positional_encoding(
-            self.hparams.title_size, self.word2vec_embedding.shape[1]
-        )
-        positional_encoding = tf.cast(positional_encoding, dtype=embedded_sequences_title.dtype)
-        embedded_sequences_title += positional_encoding[: tf.shape(embedded_sequences_title)[1], :]
 
         y = tf.keras.layers.Dropout(self.hparams.dropout)(embedded_sequences_title)
         y = SelfAttention(self.hparams.head_num, self.hparams.head_dim, seed=self.seed)(

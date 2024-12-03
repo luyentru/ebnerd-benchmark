@@ -1,7 +1,35 @@
-# Contributors
-<p align="left">
-  <img src="https://contributors-img.web.app/image?repo=ebanalyse/ebnerd-benchmark" width = 50/>
-</p>
+# Changelog for llama embeddings
+
+In the base implementation, roBERTa (loaded via huggingface) is used to generate word embeddings. We are replacing roBERTa with llama-2-7b (loaded via huggingface as well) to create higher-dimensional embeddings without changing the structure of the model. 
+
+## Changes
+
+1.	nrms_ebnerd.py
+
+-	imported AutoModelForCausalLM from transformer (huggingface’s library)
+-	changed transformer_model_name to “meta-llama/Llama-2-7b-hf”
+o	adjusted how the models are built (dependant on the model classes in hf)
+
+2.	_articles.py
+
+-	adjusted convert_text2encoding_with_transformers function
+o	max_length needs to be initialized 
+o	special tokens set to TRUE
+o	padding is set to max length
+
+3.	smaller things
+
+in venv/lib/python3.11/site-packages/ebrec/utils/_nlp.py
+
+def get_transformers_word_embeddings(model: AutoModel):
+    return model.model.embed_tokens.weight.data.to("cpu").numpy()
+
+
+## Outcomes
+
+The NRMS is initialized with the llama embeddings (still saved in word2vec_embeddings). 
+
+
 
 # Introduction
 Hello there 👋🏽

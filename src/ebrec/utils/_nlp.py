@@ -15,7 +15,7 @@ except ImportError:
 
 
 def get_transformers_word_embeddings(model: AutoModel):
-    return model.embeddings.word_embeddings.weight.data.to("cpu").numpy()
+    return model.model.embed_tokens.weight.data.to("cpu").numpy()
 
 
 def generate_embeddings_with_transformers(

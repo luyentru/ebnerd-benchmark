@@ -18,6 +18,7 @@ dependencies = [
     "polars==0.20.8",
     "pyyaml==6.0.1",
     "tqdm",
+    "accelerate",
 ]
 
 [project.optional-dependencies]

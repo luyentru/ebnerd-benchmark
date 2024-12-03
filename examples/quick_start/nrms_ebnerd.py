@@ -5,6 +5,7 @@ import tensorflow as tf
 import datetime as dt
 import polars as pl
 import numpy as np
+import torch
 import gc
 import os
 
@@ -100,15 +101,15 @@ DATASPLIT = "ebnerd_small"
 MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
 FRACTION = 0.01
-EPOCHS = 5
+EPOCHS = 10
 FRACTION_TEST = 0.01
 #
 hparams_nrms.history_size = HISTORY_SIZE
 
-BATCH_SIZE_TRAIN = 32
-BATCH_SIZE_VAL = 32
-BATCH_SIZE_TEST_WO_B = 32
-BATCH_SIZE_TEST_W_B = 4
+BATCH_SIZE_TRAIN = 16
+BATCH_SIZE_VAL = 16
+BATCH_SIZE_TEST_WO_B = 16
+BATCH_SIZE_TEST_W_B = 2
 N_CHUNKS_TEST = 10
 CHUNKS_DONE = 0
 
@@ -152,7 +153,7 @@ TEXT_COLUMNS_TO_USE = [DEFAULT_SUBTITLE_COL, DEFAULT_TITLE_COL]
 transformer_model = AutoModelForCausalLM.from_pretrained(
     TRANSFORMER_MODEL_NAME,
     use_auth_token=True,
-    #torch_dtype=torch.float16,  # Use half precision to save memory
+    torch_dtype=torch.float16,  # Use half precision to save memory
     device_map="auto"  # Automatically handle model splitting across GPUs
 )
 

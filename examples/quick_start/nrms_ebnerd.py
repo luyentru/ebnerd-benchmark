@@ -1,5 +1,5 @@
 from tensorflow.keras.backend import clear_session
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
 import tensorflow as tf
 import datetime as dt
@@ -32,8 +32,9 @@ from ebrec.utils._articles import convert_text2encoding_with_transformers
 from ebrec.utils._polars import (
     slice_join_dataframes,
     concat_str_columns,
-    chunk_dataframe,
-    split_df,
+    #chunk_dataframe,
+    split_df_chunks,
+    split_df_fraction,
 )
 from ebrec.utils._articles import create_article_id_to_value_mapping
 from ebrec.utils._nlp import get_transformers_word_embeddings
@@ -80,8 +81,8 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     return df_behaviors
 
 
-PATH = Path("~/ebnerd_data").expanduser()
-DUMP_DIR = Path("ebnerd_predictions")
+PATH = Path("/dtu/blackhole/0c/215532/ebnerd_data").expanduser()
+DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)
 SEED = np.random.randint(0, 1_000)
 
@@ -98,9 +99,9 @@ print(f"Dir: {MODEL_NAME}")
 DATASPLIT = "ebnerd_small"
 MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
-FRACTION = 1.0
+FRACTION = 0.01
 EPOCHS = 5
-FRACTION_TEST = 1.0
+FRACTION_TEST = 0.01
 #
 hparams_nrms.history_size = HISTORY_SIZE
 
@@ -132,7 +133,7 @@ df_train = (
     )
     .pipe(create_binary_labels_column)
 )
-df_train, df_validation = split_df(df_train, fraction=0.9, seed=SEED, shuffle=False)
+df_train, df_validation = split_df_fraction(df_train, fraction=0.9, seed=SEED, shuffle=False)
 
 # df_test = df_validation
 # df_train = df_train[:100]
@@ -140,13 +141,30 @@ df_train, df_validation = split_df(df_train, fraction=0.9, seed=SEED, shuffle=Fa
 # df_test = df_test[:100]
 df_articles = pl.read_parquet(PATH.joinpath("articles.parquet"))
 
+
+############# START CHANGES FOR LLAMA EMBEDDINGS
+
 # =>
-TRANSFORMER_MODEL_NAME = "FacebookAI/xlm-roberta-base"
+TRANSFORMER_MODEL_NAME = "meta-llama/Llama-2-7b-hf" # changed
 TEXT_COLUMNS_TO_USE = [DEFAULT_SUBTITLE_COL, DEFAULT_TITLE_COL]
 
 # LOAD HUGGINGFACE:
-transformer_model = AutoModel.from_pretrained(TRANSFORMER_MODEL_NAME)
-transformer_tokenizer = AutoTokenizer.from_pretrained(TRANSFORMER_MODEL_NAME)
+transformer_model = AutoModelForCausalLM.from_pretrained(
+    TRANSFORMER_MODEL_NAME,
+    use_auth_token=True,
+    #torch_dtype=torch.float16,  # Use half precision to save memory
+    device_map="auto"  # Automatically handle model splitting across GPUs
+)
+
+transformer_tokenizer = AutoTokenizer.from_pretrained(
+    TRANSFORMER_MODEL_NAME,
+)
+
+if transformer_tokenizer.pad_token is None:
+    transformer_tokenizer.pad_token = transformer_tokenizer.eos_token
+
+
+############# STOP CHANGES FOR LLAMA EMBEDDINGS
 
 word2vec_embedding = get_transformers_word_embeddings(transformer_model)
 #
@@ -232,7 +250,7 @@ df_test = (
 df_test_wo_beyond = df_test.filter(~pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 df_test_w_beyond = df_test.filter(pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 
-df_test_chunks = chunk_dataframe(df_test_wo_beyond, n_chunks=N_CHUNKS_TEST)
+df_test_chunks = split_df_chunks(df_test_wo_beyond, n_chunks=N_CHUNKS_TEST)
 df_pred_test_wo_beyond = []
 
 for i, df_test_chunk in enumerate(df_test_chunks[CHUNKS_DONE:], start=1 + CHUNKS_DONE):

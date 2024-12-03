@@ -3,35 +3,12 @@
   <img src="https://contributors-img.web.app/image?repo=ebanalyse/ebnerd-benchmark" width = 50/>
 </p>
 
-//this is now our fork
-
-# Beats Instructions
-
-# Access GPU
-a100sh
-
-# set-up/load venv 
-python -m venv venv # only first time
-source venv/bin/activate
-pip install . # only first time
-
-# move cd to /quick_examples
- 
-# use correct GPU
-module load cuda/12.2
-export XLA_FLAGS=--xla_gpu_cuda_data_dir=$CUDA_HOME
-
-# run file 
-python nrms_ebnerd.py
-
-
-
 # Introduction
 Hello there 👋🏽
 
 We recommend to check the repository frequently, as we are updating and documenting it along the way!
 
-## EBNeRD - Forked version
+## EBNeRD 
 Ekstra Bladet Recommender System repository, created for the RecSys'24 Challenge. 
 
 # Getting Started

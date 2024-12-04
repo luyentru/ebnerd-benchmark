@@ -53,7 +53,7 @@ for gpu in gpus:
 # conda activate ./venv/
 # python -i examples/00_quick_start/nrms_ebnerd.py
 
-DEBUG = 1
+DEBUG = 0 # set to 1 if checking if code is running, set to 0 otherwise
 
 
 def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
@@ -84,7 +84,7 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     return df_behaviors
 
 
-PATH = Path("../../../recsys_challenge/ebnerd_data").resolve() ### <===== CHANGE PATH ACCORDINGLY
+PATH = Path("../../../ebnerd_data").resolve() ### <===== CHANGE PATH ACCORDINGLY
 DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)
 SEED = 42
@@ -103,9 +103,9 @@ DATASPLIT = "ebnerd_small"
 MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
 TITLE_SIZE = 30
-FRACTION = 1.0
-EPOCHS = 2 if DEBUG else 20
-FRACTION_TEST = 1.0
+FRACTION = 0.05 # 1.0
+EPOCHS = 2 if DEBUG else 5
+FRACTION_TEST = 0.05 # 1.0
 
 BATCH_SIZE_TRAIN = 32
 BATCH_SIZE_VAL = 32

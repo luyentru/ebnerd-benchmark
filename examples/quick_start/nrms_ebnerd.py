@@ -7,6 +7,7 @@ import polars as pl
 import numpy as np
 import gc
 import os
+from sklearn.decomposition import PCA
 
 from ebrec.utils._constants import (
     DEFAULT_HISTORY_ARTICLE_ID_COL,
@@ -82,7 +83,7 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     return df_behaviors
 
 
-PATH = Path("../../../recsys_challenge/ebnerd_data").resolve()
+PATH = Path("../../../ebnerd_data").resolve()
 DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)
 SEED = np.random.randint(0, 1_000)
@@ -100,9 +101,9 @@ print(f"Dir: {MODEL_NAME}")
 DATASPLIT = "ebnerd_small"
 MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
-FRACTION = 1.0
+FRACTION = 0.001 #1.0
 EPOCHS = 1
-FRACTION_TEST = 1.0
+FRACTION_TEST = 0.001 #1.0
 #
 hparams_nrms.history_size = HISTORY_SIZE
 
@@ -156,13 +157,130 @@ df_articles, cat_cal = concat_str_columns(df_articles, columns=TEXT_COLUMNS_TO_U
 df_articles, token_col_title = convert_text2encoding_with_transformers(
     df_articles, transformer_tokenizer, cat_cal, max_length=MAX_TITLE_LENGTH
 )
-# =>
+
+########### Image embeddings
+
+# Target embedding size (same as text embedding size)
+TARGET_EMBEDDING_SIZE = 30
+
+def resize_embedding(embedding, target_size):
+    if len(embedding) > target_size:
+        return embedding[:target_size]  # Truncate
+    elif len(embedding) < target_size:
+        return embedding + [0.0] * (target_size - len(embedding))  # Pad
+    return embedding
+
+# def combine_embeddings(text_embedding, image_embedding):
+#     # Convert text_embedding to float
+#     text_embedding = [float(x) for x in text_embedding]
+
+#     # Resize image_embedding to match text_embedding (if required)
+#     if len(image_embedding) != len(text_embedding):
+#         image_embedding = resize_embedding(image_embedding, len(text_embedding))
+
+#     # Concatenate
+#     return text_embedding + image_embedding
+
+def combine_embeddings(text_embedding, image_embedding, target_size=30):
+    # Convert text_embedding to float
+    text_embedding = [float(x) for x in text_embedding]
+
+    # Truncate or pad both embeddings to half the target size
+    half_size = target_size // 2
+    text_embedding = resize_embedding(text_embedding, half_size)
+    image_embedding = resize_embedding(image_embedding, half_size)
+
+    # Combine by concatenation (results in exactly `target_size`)
+    return text_embedding + image_embedding
+
+
+# Load data
+df_image_embeddings = pl.read_parquet(PATH.joinpath("image_embeddings.parquet"))
+
+# Ensure the article_id matches between articles and image embeddings
+df_articles = df_articles.join(df_image_embeddings, on="article_id", how="left")
+
+# Debug statements
+# print("Sample image embeddings:")
+# print(df_articles.head(5))
+# print("Columns in df_articles:", df_articles.columns)
+# print("Sample text embeddings:", df_articles[token_col_title].head(5))
+# print("Sample image embeddings:", df_articles["image_embedding"].head(5))
+
+def ensure_valid_embedding(embedding, target_size=1024):
+    # Handle None or empty embeddings
+    if embedding is None:
+        return [0.0] * target_size
+    # Handle Polars Series
+    if isinstance(embedding, pl.Series):
+        # print("Found Polars Series; converting to list.")
+        embedding = embedding.to_list()
+    # Handle other invalid types or lengths
+    if not isinstance(embedding, list) or len(embedding) != target_size:
+        return [0.0] * target_size
+    # If valid, return as is
+    return embedding
+
+# Replace None with zero vector explicitly before applying the function
+df_articles = df_articles.with_columns(
+    pl.when(pl.col("image_embedding").is_null())
+    .then([0.0] * 1024)
+    .otherwise(pl.col("image_embedding"))
+    .alias("image_embedding")
+)
+
+# Apply the function
+df_articles = df_articles.with_columns(
+    pl.col("image_embedding").apply(lambda x: ensure_valid_embedding(x, target_size=1024)).alias("image_embedding")
+)
+
+# Debug
+image_shapes = set(len(embedding) for embedding in df_articles["image_embedding"])
+print("Unique shapes of image embeddings:", image_shapes)
+
+# Combine text and image embeddings
+df_articles = df_articles.with_columns(
+    pl.struct([token_col_title, "image_embedding"])
+    .apply(lambda row: combine_embeddings(row[token_col_title], row["image_embedding"]))
+    .alias("combined_embedding")
+)
+
+# Debug
+combined_shapes = set(len(embedding) for embedding in df_articles["combined_embedding"])
+print("Unique shapes of combined embeddings:", combined_shapes)
+
+###########
+
+# # =>
+# article_mapping = create_article_id_to_value_mapping(
+#     df=df_articles, value_col=token_col_title
+# )
+
+# Image embeddings
 article_mapping = create_article_id_to_value_mapping(
-    df=df_articles, value_col=token_col_title
+    df=df_articles, value_col="combined_embedding"
 )
 
 # =>
 print("Init train- and val-dataloader")
+# train_dataloader = NRMSDataLoaderPretransform(
+#     behaviors=df_train,
+#     article_dict=article_mapping,
+#     unknown_representation="zeros",
+#     history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
+#     eval_mode=False,
+#     batch_size=BATCH_SIZE_TRAIN,
+# )
+# val_dataloader = NRMSDataLoaderPretransform(
+#     behaviors=df_validation,
+#     article_dict=article_mapping,
+#     unknown_representation="zeros",
+#     history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
+#     eval_mode=False,
+#     batch_size=BATCH_SIZE_VAL,
+# )
+
+# Image embeddings
 train_dataloader = NRMSDataLoaderPretransform(
     behaviors=df_train,
     article_dict=article_mapping,
@@ -248,6 +366,7 @@ for i, df_test_chunk in enumerate(df_test_chunks[CHUNKS_DONE:], start=1 + CHUNKS
         eval_mode=True,
         batch_size=BATCH_SIZE_TEST_WO_B,
     )
+
     # Predict and clear session
     scores = model.scorer.predict(test_dataloader_wo_b)
     clear_session()

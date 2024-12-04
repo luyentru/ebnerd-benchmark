@@ -1,5 +1,6 @@
 from tensorflow.keras.backend import clear_session
 from transformers import AutoTokenizer, AutoModel
+import torch
 from pathlib import Path
 import tensorflow as tf
 import datetime as dt
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 import gc
 import os
+from tqdm import tqdm
 
 from ebrec.utils._constants import (
     DEFAULT_HISTORY_ARTICLE_ID_COL,
@@ -102,9 +104,9 @@ MAX_TITLE_LENGTH = 30
 
 # TODO: MAX_ABSTRACT_LENGTH = 50
 HISTORY_SIZE = 20
-FRACTION = 1
+FRACTION = 0.05
 EPOCHS = 10
-FRACTION_TEST = 1
+FRACTION_TEST = 0.05
 #
 hparams_nrms.history_size = HISTORY_SIZE
 
@@ -157,54 +159,87 @@ df_validation = (
 # df_test = df_test[:100]
 df_articles = pl.read_parquet(PATH.joinpath("articles.parquet"))
 
-# =>
-TRANSFORMER_MODEL_NAME = "FacebookAI/xlm-roberta-base"
+# Load LLaMA model and tokenizer
+llama_model_name = "meta-llama/Llama-3.2-1b"
+
+llama_tokenizer = AutoTokenizer.from_pretrained(llama_model_name)
+# Set padding token
+if llama_tokenizer.pad_token is None:
+    llama_tokenizer.pad_token = llama_tokenizer.eos_token  # Use eos_token as pad_token
+
+llama_model = AutoModel.from_pretrained(llama_model_name)
+
+def create_llama_embeddings(df_articles, text_columns, max_length):
+    embeddings = []
+    for row in tqdm(df_articles.iter_rows(named=True), total=len(df_articles), desc="Creating LLaMA embeddings"):
+        # Concatenate title and subtitle
+        text = " ".join([str(row[col]) for col in text_columns if row[col] is not None])
+        inputs = llama_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=max_length)
+        with torch.no_grad():
+            outputs = llama_model(**inputs)
+            # Use mean pooling of last hidden states as embedding
+            embedding = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+        embeddings.append(embedding)
+    return np.array(embeddings)
+
+# # Create LLaMA embeddings for articles
+# TEXT_COLUMNS_TO_USE = [DEFAULT_SUBTITLE_COL, DEFAULT_TITLE_COL]
+# llama_embeddings = create_llama_embeddings(df_articles, TEXT_COLUMNS_TO_USE, MAX_TITLE_LENGTH)
+
+# # Store embedding dimension for model configuration
+# EMBEDDING_DIM = llama_embeddings.shape[1]
+
+# # Update article mapping to use LLaMA embeddings
+# article_mapping = {
+#     article_id: embedding 
+#     for article_id, embedding in zip(
+#         df_articles['article_id'].to_numpy(), 
+#         llama_embeddings
+#     )
+# }
+
 TEXT_COLUMNS_TO_USE = [DEFAULT_SUBTITLE_COL, DEFAULT_TITLE_COL]
-
-# LOAD HUGGINGFACE:
-transformer_model = AutoModel.from_pretrained(TRANSFORMER_MODEL_NAME)
-transformer_tokenizer = AutoTokenizer.from_pretrained(TRANSFORMER_MODEL_NAME)
-
-word2vec_embedding = get_transformers_word_embeddings(transformer_model)
-#
-df_articles, cat_cal = concat_str_columns(df_articles, columns=TEXT_COLUMNS_TO_USE)
-df_articles, token_col_title = convert_text2encoding_with_transformers(
-    df_articles, transformer_tokenizer, cat_cal, max_length=MAX_TITLE_LENGTH
-)
-# =>
-article_mapping = create_article_id_to_value_mapping(
-    df=df_articles, value_col=token_col_title
+# Extract required article IDs from behaviors
+required_article_ids = set(
+    df_train[DEFAULT_HISTORY_ARTICLE_ID_COL].explode().to_list() +
+    df_train[DEFAULT_INVIEW_ARTICLES_COL].explode().to_list() +
+    df_validation[DEFAULT_HISTORY_ARTICLE_ID_COL].explode().to_list() +
+    df_validation[DEFAULT_INVIEW_ARTICLES_COL].explode().to_list()
 )
 
-# =>
-print("Init train- and val-dataloader")
-train_dataloader = NRMSDataLoaderPretransform(
-    behaviors=df_train,
-    article_dict=article_mapping,
-    unknown_representation="zeros",
-    history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
-    eval_mode=False,
-    batch_size=BATCH_SIZE_TRAIN,
-)
-val_dataloader = NRMSDataLoaderPretransform(
-    behaviors=df_validation,
-    article_dict=article_mapping,
-    unknown_representation="zeros",
-    history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
-    eval_mode=False,
-    batch_size=BATCH_SIZE_VAL,
+# Filter df_articles to only include required articles
+df_articles_filtered = df_articles.filter(pl.col('article_id').is_in(required_article_ids))
+
+# Create LLaMA embeddings for filtered articles
+llama_embeddings = create_llama_embeddings(
+    df_articles=df_articles_filtered,
+    text_columns=TEXT_COLUMNS_TO_USE,
+    max_length=MAX_TITLE_LENGTH
 )
 
-# CALLBACKS
-tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=LOG_DIR, histogram_freq=1)
-early_stopping = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=2)
-modelcheckpoint = tf.keras.callbacks.ModelCheckpoint(
-    filepath=MODEL_WEIGHTS, save_best_only=True, save_weights_only=True, verbose=1
-)
+# Store embedding dimension for model configuration
+EMBEDDING_DIM = llama_embeddings.shape[1]
 
+# Update article mapping to use LLaMA embeddings
+article_mapping = {
+    article_id: embedding 
+    for article_id, embedding in zip(
+        df_articles['article_id'].to_numpy(), 
+        llama_embeddings
+    )
+}
+
+# Clean up LLaMA resources
+del llama_model, llama_tokenizer
+torch.cuda.empty_cache()
+gc.collect()
+
+# Update model hyperparameters
+hparams_nrms.embedding_dim = EMBEDDING_DIM
+
+# Create and train model
 model = NRMSModel(
     hparams=hparams_nrms,
-    word2vec_embedding=word2vec_embedding,
     seed=42,
 )
 hist = model.model.fit(
@@ -233,13 +268,17 @@ print(metrics.evaluate())
 clear_session()
 
 del (
-    transformer_tokenizer,
-    transformer_model,
+    llama_model,
+    llama_tokenizer,
     train_dataloader,
     val_dataloader,
     df_validation,
     df_train,
 )
+
+# After generating embeddings
+del llama_model, llama_tokenizer
+torch.cuda.empty_cache()  # If using GPU
 gc.collect()
 
 print(f"saving model: {MODEL_WEIGHTS}")
@@ -350,3 +389,5 @@ model.model.load_weights(MODEL_WEIGHTS)
 #     path=DUMP_DIR.joinpath("predictions.txt"),
 #     filename_zip=f"{DATASPLIT}_predictions-{MODEL_NAME}.zip",
 # )
+
+

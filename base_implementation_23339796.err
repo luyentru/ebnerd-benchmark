@@ -1,0 +1,6 @@
+error: Your local changes to the following files would be overwritten by checkout:
+	examples/quick_start/nrms_ebnerd.py
+Please commit your changes or stash them before you switch branches.
+Aborting
+Loaded module: cuda/12.2
+/zhome/8f/a/215532/.lsbatch/1733306301.23339796.shell: line 20: llama-venv/bin/activate: No such file or directory

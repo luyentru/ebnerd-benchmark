@@ -10,40 +10,34 @@ from tensorflow.keras.regularizers import l2
 
 
 class NRMSModel:
-    """NRMS model(Neural News Recommendation with Multi-Head Self-Attention)
+    """NRMS model modified to use pre-computed LLaMA embeddings.
 
+    This version of NRMS bypasses the news encoder and directly uses LLaMA embeddings
+    in the user encoder for news article representation.
+
+    Original paper:
     Chuhan Wu, Fangzhao Wu, Suyu Ge, Tao Qi, Yongfeng Huang,and Xing Xie, "Neural News
     Recommendation with Multi-Head Self-Attention" in Proceedings of the 2019 Conference
     on Empirical Methods in Natural Language Processing and the 9th International Joint Conference
     on Natural Language Processing (EMNLP-IJCNLP)
 
     Attributes:
+        hparams (dict): Hyperparameters for the model
+        seed (int): Random seed for reproducibility
     """
 
     def __init__(
         self,
         hparams: dict,
-        word2vec_embedding: np.ndarray = None,
-        word_emb_dim: int = 300,
-        vocab_size: int = 32000,
         seed: int = None,
     ):
-        """Initialization steps for NRMS."""
+        """Initialization steps for NRMS with LLaMA embeddings."""
         self.hparams = hparams
         self.seed = seed
 
         # SET SEED:
         tf.random.set_seed(seed)
         np.random.seed(seed)
-
-        # INIT THE WORD-EMBEDDINGS:
-        if word2vec_embedding is None:
-            # Xavier Initialization
-            initializer = GlorotUniform(seed=self.seed)
-            self.word2vec_embedding = initializer(shape=(vocab_size, word_emb_dim))
-            # self.word2vec_embedding = np.random.rand(vocab_size, word_emb_dim)
-        else:
-            self.word2vec_embedding = word2vec_embedding
 
         # BUILD AND COMPILE MODEL:
         self.model, self.scorer = self._build_graph()
@@ -89,111 +83,70 @@ class NRMSModel:
         model, scorer = self._build_nrms()
         return model, scorer
 
-    def _build_userencoder(self, titleencoder):
-        """The main function to create user encoder of NRMS.
-
-        Args:
-            titleencoder (object): the news encoder of NRMS.
-
-        Return:
-            object: the user encoder of NRMS.
-        """
+    def _build_userencoder(self):
+        """The main function to create user encoder of NRMS using LLaMA embeddings."""
+        # Input shape should match the history size and LLaMA embedding dimension
         his_input_title = tf.keras.Input(
-            shape=(self.hparams.history_size, self.hparams.title_size), dtype="int32"
+            shape=(self.hparams.history_size, llama_embeddings.shape[1]), dtype="float32"
         )
 
-        click_title_presents = tf.keras.layers.TimeDistributed(titleencoder)(
-            his_input_title
-        )
+        # Directly use LLaMA embeddings
+        click_title_presents = his_input_title
+
+        # Apply self-attention
         y = SelfAttention(self.hparams.head_num, self.hparams.head_dim, seed=self.seed)(
             [click_title_presents] * 3
         )
+        
+        # Apply attention layer
         user_present = AttLayer2(self.hparams.attention_hidden_dim, seed=self.seed)(y)
 
+        # Create the model
         model = tf.keras.Model(his_input_title, user_present, name="user_encoder")
         return model
 
-    def _build_newsencoder(self):
-        """The main function to create news encoder of NRMS.
-
-        Args:
-            embedding_layer (object): a word embedding layer.
-
-        Return:
-            object: the news encoder of NRMS.
-        """
-        embedding_layer = tf.keras.layers.Embedding(
-            self.word2vec_embedding.shape[0],
-            self.word2vec_embedding.shape[1],
-            weights=[self.word2vec_embedding],
-            trainable=True,
-        )
-        sequences_input_title = tf.keras.Input(
-            shape=(self.hparams.title_size,), dtype="int32"
-        )
-        embedded_sequences_title = embedding_layer(sequences_input_title)
-
-        y = tf.keras.layers.Dropout(self.hparams.dropout)(embedded_sequences_title)
-        y = SelfAttention(self.hparams.head_num, self.hparams.head_dim, seed=self.seed)(
-            [y, y, y]
-        )
-
-        # Create configurable Dense layers:
-        for layer in [400, 400, 400]:
-            y = tf.keras.layers.Dense(units=layer, activation="relu")(y)
-            y = tf.keras.layers.BatchNormalization()(y)
-            y = tf.keras.layers.Dropout(self.hparams.dropout)(y)
-
-        y = tf.keras.layers.Dropout(self.hparams.dropout)(y)
-        pred_title = AttLayer2(self.hparams.attention_hidden_dim, seed=self.seed)(y)
-
-        model = tf.keras.Model(sequences_input_title, pred_title, name="news_encoder")
-        return model
-
     def _build_nrms(self):
-        """The main function to create NRMS's logic. The core of NRMS
-        is a user encoder and a news encoder.
+        """The main function to create NRMS's logic using LLaMA embeddings.
 
         Returns:
             object: a model used to train.
             object: a model used to evaluate and inference.
         """
 
+        # Input for user history with LLaMA embeddings
         his_input_title = tf.keras.Input(
-            shape=(self.hparams.history_size, self.hparams.title_size),
-            dtype="int32",
+            shape=(self.hparams.history_size, llama_embeddings.shape[1]),
+            dtype="float32",
         )
+        
+        # Input for candidate news articles with LLaMA embeddings
         pred_input_title = tf.keras.Input(
-            # shape = (hparams.npratio + 1, hparams.title_size)
-            shape=(None, self.hparams.title_size),
-            dtype="int32",
+            shape=(None, llama_embeddings.shape[1]),
+            dtype="float32",
         )
         pred_input_title_one = tf.keras.Input(
-            shape=(
-                1,
-                self.hparams.title_size,
-            ),
-            dtype="int32",
+            shape=(1, llama_embeddings.shape[1]),
+            dtype="float32",
         )
-        pred_title_one_reshape = tf.keras.layers.Reshape((self.hparams.title_size,))(
+        pred_title_one_reshape = tf.keras.layers.Reshape((llama_embeddings.shape[1],))(
             pred_input_title_one
         )
-        titleencoder = self._build_newsencoder()
-        self.userencoder = self._build_userencoder(titleencoder)
-        self.newsencoder = titleencoder
 
-        user_present = self.userencoder(his_input_title)
-        news_present = tf.keras.layers.TimeDistributed(self.newsencoder)(
-            pred_input_title
-        )
-        news_present_one = self.newsencoder(pred_title_one_reshape)
+        # Use the user encoder
+        user_present = self._build_userencoder()(his_input_title)
+        
+        # Process candidate news articles
+        news_present = tf.keras.layers.TimeDistributed(lambda x: x)(pred_input_title)
+        news_present_one = pred_title_one_reshape
 
+        # Compute predictions
         preds = tf.keras.layers.Dot(axes=-1)([news_present, user_present])
         preds = tf.keras.layers.Activation(activation="softmax")(preds)
 
         pred_one = tf.keras.layers.Dot(axes=-1)([news_present_one, user_present])
         pred_one = tf.keras.layers.Activation(activation="sigmoid")(pred_one)
 
+        # Define models
         model = tf.keras.Model([his_input_title, pred_input_title], preds)
         scorer = tf.keras.Model([his_input_title, pred_input_title_one], pred_one)
 

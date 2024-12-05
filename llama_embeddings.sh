@@ -4,10 +4,10 @@
 #BSUB -J llama_embeddings                 # Job name
 #BSUB -n 4                                # Number of CPU cores
 #BSUB -gpu "num=1:mode=exclusive_process" # Request 1 GPU
-#BSUB -R "rusage[mem=50GB]"               # Request 50GB system memory
-#BSUB -W 24:00                            # Maximum walltime: 24 hours
-#BSUB -o base_implementation_%J.out       # Output file
-#BSUB -e base_implementation_%J.err       # Error file
+#BSUB -R "rusage[mem=80GB]"               # Request 50GB system memory
+#BSUB -W 8:00                            # Maximum walltime: 24 hours
+#BSUB -o llama_embeddings_%J.out       # Output file
+#BSUB -e llama_embeddings_%J.err       # Error file
 #BSUB -B                                  # Send notification at job start
 #BSUB -N                                  # Send notification at job completion
 

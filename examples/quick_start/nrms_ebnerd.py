@@ -160,7 +160,7 @@ df_validation = (
 df_articles = pl.read_parquet(PATH.joinpath("articles.parquet"))
 
 # Load LLaMA model and tokenizer
-llama_model_name = "meta-llama/Llama-3.2-1b"
+llama_model_name = "meta-llama/Llama-2-7b-hf"
 
 llama_tokenizer = AutoTokenizer.from_pretrained(llama_model_name)
 # Set padding token

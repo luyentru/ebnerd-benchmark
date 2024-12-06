@@ -17,7 +17,7 @@ module load cuda/12.2
 export XLA_FLAGS=--xla_gpu_cuda_data_dir=$CUDA_HOME
 
 # Activate your virtual environment
-source llam-venv/bin/activate
+source llama-venv/bin/activate
 
 # Run your implementation
 python examples/quick_start/nrms_ebnerd.py

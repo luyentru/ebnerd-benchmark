@@ -55,14 +55,13 @@ for gpu in gpus:
 
 DEBUG = 1
 
-
 def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     """
     Load ebnerd - function
     """
     df_history = (
         pl.scan_parquet(path.joinpath("history.parquet"))
-        .select(DEFAULT_USER_COL, DEFAULT_HISTORY_ARTICLE_ID_COL)
+        .select(DEFAULT_USER_COL, DEFAULT_HISTORY_ARTICLE_ID_COL)#, DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL)
         .pipe(
             truncate_history,
             column=DEFAULT_HISTORY_ARTICLE_ID_COL,
@@ -104,7 +103,7 @@ MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
 TITLE_SIZE = 30
 FRACTION = 1.0
-EPOCHS = 2 if DEBUG else 20
+EPOCHS = 1 if DEBUG else 20
 FRACTION_TEST = 1.0
 
 BATCH_SIZE_TRAIN = 32
@@ -175,20 +174,18 @@ df = (
     .pipe(create_binary_labels_column)
 )
 
+
 # We keep the last 6 days of our training data as the validation set.
 last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=6)
 df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)
 df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= last_dt)
-
-
 df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
-#df_train, df_validation = split_df_fraction(df_train, fraction=0.9, seed=SEED, shuffle=False)
 
 '''
 Use these subsets for debugging purposes/to test correctness of your code
 '''
 if DEBUG:
-    df_train = df_train[:1000]
+    df_train = df_train[:100]
     df_validation = df_validation[:1000]
     df_articles = df_articles[:10000]
 
@@ -207,6 +204,7 @@ df_articles, cat_cal = concat_str_columns(df_articles, columns=TEXT_COLUMNS_TO_U
 df_articles, token_col_title = convert_text2encoding_with_transformers(
     df_articles, transformer_tokenizer, cat_cal, max_length=MAX_TITLE_LENGTH
 )
+
 # =>
 article_mapping = create_article_id_to_value_mapping(
     df=df_articles, value_col=token_col_title
@@ -245,6 +243,7 @@ model = NRMSModel(
     word2vec_embedding=word2vec_embedding,
     seed=42,
 )
+
 hist = model.model.fit(
     train_dataloader,
     validation_data=val_dataloader,
@@ -265,7 +264,7 @@ metrics = MetricEvaluator(
     metric_functions=[AucScore(), MrrScore(), NdcgScore(k=5), NdcgScore(k=10)],
 )
 print(metrics.evaluate())
-
+exit()
 
 del (
     transformer_tokenizer,

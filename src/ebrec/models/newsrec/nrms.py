@@ -9,6 +9,36 @@ from tensorflow.keras.initializers import GlorotUniform
 from tensorflow.keras.regularizers import l2
 
 
+class Time2Vec(tf.keras.layers.Layer):
+    def __init__(self, embed_dim, seed=42):
+        super(Time2Vec, self).__init__()
+        self.embed_dim = embed_dim
+        self.seed = seed
+
+    def build(self, input_shape):
+        # Use initializers with seed for reproducibility
+        initializer = tf.keras.initializers.RandomUniform(seed=self.seed)
+
+        # Define trainable weights
+        self.wb = self.add_weight(name='wb', shape=(1,), initializer=initializer, trainable=True)
+        self.bb = self.add_weight(name='bb', shape=(1,), initializer=initializer, trainable=True)
+        self.wa = self.add_weight(name='wa', shape=(self.embed_dim - 1,), initializer=initializer, trainable=True)
+        self.ba = self.add_weight(name='ba', shape=(self.embed_dim - 1,), initializer=initializer, trainable=True)
+
+    def call(self, inputs):
+        # Ensure inputs have shape [batch_size, time_embed_dim - 1]
+        inputs = tf.expand_dims(inputs, axis=-1)  # Shape: [batch_size, 1]
+        
+        # Linear component
+        time_linear = self.wb * inputs + self.bb  # Shape: [batch_size, 1]
+
+        # Periodic component
+        time_periodic = tf.math.sin(inputs * self.wa + self.ba)  # Element-wise operation
+
+        # Combine linear and periodic components
+        return tf.concat([time_linear, time_periodic], axis=-1)  # Shape: [batch_size, time_embed_dim]
+
+
 class NRMSModel:
     """NRMS model(Neural News Recommendation with Multi-Head Self-Attention)
 
@@ -54,29 +84,6 @@ class NRMSModel:
         self.model.compile(loss=data_loss, optimizer=train_optimizer)
 
 
-    def _get_positional_encoding(self, position, embed_dim):
-        """Generate sinusoidal positional encodings.
-
-        Args:
-            position (int): Maximum sequence length.
-            embed_dim (int): Embedding dimension.
-
-        Returns:
-            tf.Tensor: A tensor of shape (position, embed_dim) with positional encodings.
-        """
-        # Ensure consistent dtypes by casting tf.range to tf.float32
-        angle_rads = tf.cast(tf.range(position)[:, tf.newaxis], tf.float32) / tf.pow(
-            10000.0, (2 * (tf.cast(tf.range(embed_dim // 2)[tf.newaxis, :], tf.float32))) / tf.cast(embed_dim, tf.float32)
-        )
-        # Apply sin to even indices
-        sines = tf.math.sin(angle_rads)
-        # Apply cos to odd indices
-        cosines = tf.math.cos(angle_rads)
-        # Concatenate sin and cos along the last axis
-        positional_encoding = tf.concat([sines, cosines], axis=-1)
-        return positional_encoding
-
-
     def _get_loss(self, loss: str):
         """Make loss function, consists of data loss and regularization loss
         Returns:
@@ -114,119 +121,166 @@ class NRMSModel:
         model, scorer = self._build_nrms()
         return model, scorer
 
-    def _build_userencoder(self, titleencoder):
-        """The main function to create user encoder of NRMS.
+    def _build_userencoder(self, titleencoder: tf.keras.Model) -> tf.keras.Model:
+        """
+        Build the user encoder for NRMS (Neural News Recommendation with Multi-Head Self-Attention).
+
+        The user encoder processes the user's interaction history to generate a user representation.
+        It combines the article embeddings from the user's history with temporal embeddings derived
+        from the recency of interactions (time differences).
 
         Args:
-            titleencoder (object): the news encoder of NRMS.
+            titleencoder (tf.keras.Model): The news encoder model that generates article embeddings.
 
-        Return:
-            object: the user encoder of NRMS.
+        Returns:
+            tf.keras.Model: A Keras model that encodes the user's interaction history into a latent representation.
         """
+        # Input: User's historical article clicks (batch_size, history_size, title_size)
         his_input_title = tf.keras.Input(
             shape=(self.hparams.history_size, self.hparams.title_size), dtype="int32"
         )
 
+        # Input: Time differences for the user's historical interactions (batch_size, history_size, 1)
+        time_diff_input = tf.keras.Input(
+            shape=(self.hparams.history_size, 1), dtype="float32"
+        )
+
+        # Embed titles in the user's history using the title encoder
+        # Output shape: (batch_size, history_size, embedding_dim)
         click_title_presents = tf.keras.layers.TimeDistributed(titleencoder)(
             his_input_title
         )
+
+        # Embed time differences using Time2Vec to encode both linear and periodic components
+        # Output shape: (batch_size, history_size, time_embed_dim)
+        time2vec_layer = Time2Vec(embed_dim=100, seed=self.seed)
+        time_embeddings = tf.keras.layers.TimeDistributed(time2vec_layer)(time_diff_input)
+
+        # Remove extra dimension added by Time2Vec
+        # Final shape: (batch_size, history_size, time_embed_dim)
+        time_embeddings = tf.squeeze(time_embeddings, axis=-2)
+
+        # Apply self-attention to the time embeddings (e.g., to weigh importance of time values)
+        # Shape remains: (batch_size, history_size, time_embed_dim)
+        time_attention = tf.keras.layers.Attention()([time_embeddings, time_embeddings])
+
+        # Concatenate article embeddings with time embeddings along the last axis
+        # Combined shape: (batch_size, history_size, embedding_dim + time_embed_dim)
+        combined_embeddings = tf.concat([click_title_presents, time_embeddings], axis=-1)
+
+        # Apply multi-head self-attention on the combined embeddings
+        # Output shape: (batch_size, history_size, attention_hidden_dim)
         y = SelfAttention(self.hparams.head_num, self.hparams.head_dim, seed=self.seed)(
-            [click_title_presents] * 3
+            [combined_embeddings] * 3
         )
+
         user_present = AttLayer2(self.hparams.attention_hidden_dim, seed=self.seed)(y)
 
-        model = tf.keras.Model(his_input_title, user_present, name="user_encoder")
+        # Define the user encoder model
+        model = tf.keras.Model([his_input_title, time_diff_input], user_present, name="user_encoder")
         return model
 
-    def _build_newsencoder(self):
-        """The main function to create news encoder of NRMS.
 
-        Args:
-            embedding_layer (object): a word embedding layer.
-
-        Return:
-            object: the news encoder of NRMS.
+    def _build_newsencoder(self) -> tf.keras.Model:
         """
+        Build the news encoder for NRMS.
+
+        The news encoder processes article content (e.g., titles) into a latent representation using
+        an embedding layer, self-attention, and dense layers.
+
+        Returns:
+            tf.keras.Model: A Keras model that encodes article content into a latent representation.
+        """
+        # Embedding layer to encode words into dense vectors
         embedding_layer = tf.keras.layers.Embedding(
-            self.word2vec_embedding.shape[0],
-            self.word2vec_embedding.shape[1],
-            weights=[self.word2vec_embedding],
-            trainable=True,
+            self.word2vec_embedding.shape[0],  # Vocabulary size
+            self.word2vec_embedding.shape[1],  # Embedding dimension
+            weights=[self.word2vec_embedding],  # Pre-trained embeddings
+            trainable=True,  # Allow fine-tuning
         )
-        sequences_input_title = tf.keras.Input(
-            shape=(self.hparams.title_size,), dtype="int32"
-        )
+
+        # Input: Article titles represented as sequences of word indices (batch_size, title_size)
+        sequences_input_title = tf.keras.Input(shape=(self.hparams.title_size,), dtype="int32")
+
+        # Embed the title using the embedding layer
+        # Output shape: (batch_size, title_size, embedding_dim)
         embedded_sequences_title = embedding_layer(sequences_input_title)
 
-        # generate positional encodings
-        positional_encoding = self._get_positional_encoding(
-            self.hparams.title_size, self.word2vec_embedding.shape[1]
-        )
-        positional_encoding = tf.cast(positional_encoding, dtype=embedded_sequences_title.dtype)
-        embedded_sequences_title += positional_encoding[: tf.shape(embedded_sequences_title)[1], :]
-
+        # Apply dropout for regularization
         y = tf.keras.layers.Dropout(self.hparams.dropout)(embedded_sequences_title)
+
+        # Apply multi-head self-attention to learn contextual word representations
+        # Output shape: (batch_size, title_size, attention_dim)
         y = SelfAttention(self.hparams.head_num, self.hparams.head_dim, seed=self.seed)(
             [y, y, y]
         )
 
-        # Create configurable Dense layers:
+        # Apply several dense layers for further transformation
         for layer in [400, 400, 400]:
             y = tf.keras.layers.Dense(units=layer, activation="relu")(y)
             y = tf.keras.layers.BatchNormalization()(y)
             y = tf.keras.layers.Dropout(self.hparams.dropout)(y)
 
-        y = tf.keras.layers.Dropout(self.hparams.dropout)(y)
         pred_title = AttLayer2(self.hparams.attention_hidden_dim, seed=self.seed)(y)
 
+        # Define the news encoder model
         model = tf.keras.Model(sequences_input_title, pred_title, name="news_encoder")
         return model
 
-    def _build_nrms(self):
-        """The main function to create NRMS's logic. The core of NRMS
-        is a user encoder and a news encoder.
+
+    def _build_nrms(self) -> tuple[tf.keras.Model, tf.keras.Model]:
+        """
+        Build the complete NRMS model, which consists of a user encoder and a news encoder.
+
+        The NRMS model generates relevance scores for candidate articles based on user history
+        and outputs recommendations.
 
         Returns:
-            object: a model used to train.
-            object: a model used to evaluate and inference.
+            tuple: A tuple containing:
+                - The NRMS model for training and evaluation.
+                - The scorer model for inference (predicting relevance for a single candidate article).
         """
-
+        # Inputs for user history and candidate articles
         his_input_title = tf.keras.Input(
-            shape=(self.hparams.history_size, self.hparams.title_size),
-            dtype="int32",
+            shape=(self.hparams.history_size, self.hparams.title_size), dtype="int32"
         )
         pred_input_title = tf.keras.Input(
-            # shape = (hparams.npratio + 1, hparams.title_size)
-            shape=(None, self.hparams.title_size),
-            dtype="int32",
+            shape=(None, self.hparams.title_size), dtype="int32"  # For multiple candidates
         )
+        time_diff_input = tf.keras.Input(
+            shape=(self.hparams.history_size, 1), dtype="float32"
+        )  # Time differences for user history
         pred_input_title_one = tf.keras.Input(
-            shape=(
-                1,
-                self.hparams.title_size,
-            ),
-            dtype="int32",
+            shape=(1, self.hparams.title_size), dtype="int32"  # For a single candidate
         )
+
+        # Flatten the single candidate input
         pred_title_one_reshape = tf.keras.layers.Reshape((self.hparams.title_size,))(
             pred_input_title_one
         )
+
+        # Build the news and user encoders
         titleencoder = self._build_newsencoder()
         self.userencoder = self._build_userencoder(titleencoder)
         self.newsencoder = titleencoder
 
-        user_present = self.userencoder(his_input_title)
+        # Generate user and candidate article representations
+        user_present = self.userencoder([his_input_title, time_diff_input])
         news_present = tf.keras.layers.TimeDistributed(self.newsencoder)(
             pred_input_title
         )
         news_present_one = self.newsencoder(pred_title_one_reshape)
 
+        # Compute relevance scores between user and candidate articles
         preds = tf.keras.layers.Dot(axes=-1)([news_present, user_present])
         preds = tf.keras.layers.Activation(activation="softmax")(preds)
 
+        # Compute relevance for a single candidate (e.g., for inference)
         pred_one = tf.keras.layers.Dot(axes=-1)([news_present_one, user_present])
         pred_one = tf.keras.layers.Activation(activation="sigmoid")(pred_one)
 
-        model = tf.keras.Model([his_input_title, pred_input_title], preds)
-        scorer = tf.keras.Model([his_input_title, pred_input_title_one], pred_one)
+        # Define the NRMS model and scorer model
+        model = tf.keras.Model([his_input_title, time_diff_input, pred_input_title], preds)
+        scorer = tf.keras.Model([his_input_title, time_diff_input, pred_input_title_one], pred_one)
 
         return model, scorer

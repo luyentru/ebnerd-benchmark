@@ -142,27 +142,52 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
             fill_nulls=self.unknown_index,
             drop_nulls=False,
         )
+        # TODO: Add the time difference here (impression time - published time)
+        # might consider normalizing it??
+        self.X = self.X.with_columns(
+            self.X[self.history_column].apply(
+                lambda history: np.random.rand(len(history)).tolist()
+            ).alias("history_time_diff")
+        )
+        # self.X = self.X.with_columns(
+        #     self.X[self.history_column].apply(
+        #         lambda history: [
+        #             self.X.filter(pl.col("article_id") == article_id)["average_diff_minutes"]
+        #             for article_id in history
+        #         ]
+        #     ).alias("history_diff_minutes")
+        # )
+
 
     def __getitem__(self, idx) -> tuple[tuple[np.ndarray], np.ndarray]:
         """
         his_input_title:    (samples, history_size, document_dimension)
+        his_time_diff:  (samples, history_size, 1)
         pred_input_title:   (samples, npratio, document_dimension)
         batch_y:            (samples, npratio)
         """
+        # Extract the batch dynamically
         batch_X = self.X[idx * self.batch_size : (idx + 1) * self.batch_size]
         batch_y = self.y[idx * self.batch_size : (idx + 1) * self.batch_size]
-        # =>
+
+        # Dynamically compute the batch size from batch_X
+        batch_size = len(batch_X)  # Number of rows in the batch
+
         if self.eval_mode:
             repeats = np.array(batch_X["n_samples"])
-            # =>
             batch_y = np.array(batch_y.explode().to_list()).reshape(-1, 1)
-            # =>
             his_input_title = repeat_by_list_values_from_matrix(
                 batch_X[self.history_column].to_list(),
                 matrix=self.lookup_article_matrix,
                 repeats=repeats,
             )
-            # =>
+            # Repeat his_time_diff to match his_input_title
+            his_time_diff = np.repeat(
+                np.array(batch_X["history_time_diff"].to_list(), dtype=float),
+                repeats=repeats,
+                axis=0
+            )
+            his_time_diff = np.expand_dims(his_time_diff, axis=-1)  # Add last dimension
             pred_input_title = self.lookup_article_matrix[
                 batch_X[self.inview_col].explode().to_list()
             ]
@@ -175,6 +200,10 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
                 batch_X[self.inview_col].to_list()
             ]
             pred_input_title = np.squeeze(pred_input_title, axis=2)
+            # TODO: Change it to use real values
+            his_time_diff = np.random.uniform(0, 1, size=(batch_size, 20, 1)).astype(np.float32)
 
         his_input_title = np.squeeze(his_input_title, axis=2)
-        return (his_input_title, pred_input_title), batch_y
+
+
+        return (his_input_title, his_time_diff, pred_input_title), batch_y

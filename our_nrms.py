@@ -18,7 +18,8 @@ from ebrec.utils._constants import (
     DEFAULT_SUBTITLE_COL,
     DEFAULT_LABELS_COL,
     DEFAULT_TITLE_COL,
-    DEFAULT_USER_COL
+    DEFAULT_USER_COL,
+    DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL # added since needed in pre-processing
 )
 
 from ebrec.utils._behaviors import (
@@ -61,10 +62,16 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     """
     df_history = (
         pl.scan_parquet(path.joinpath("history.parquet"))
-        .select(DEFAULT_USER_COL, DEFAULT_HISTORY_ARTICLE_ID_COL)#, DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL)
+        .select(DEFAULT_USER_COL, DEFAULT_HISTORY_ARTICLE_ID_COL, DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL)
         .pipe(
             truncate_history,
             column=DEFAULT_HISTORY_ARTICLE_ID_COL,
+            history_size=history_size,
+            padding_value=0,
+            enable_warning=False,
+        ).pipe(
+            truncate_history,
+            column=DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL, 
             history_size=history_size,
             padding_value=0,
             enable_warning=False,
@@ -136,6 +143,7 @@ COLUMNS = [
     DEFAULT_INVIEW_ARTICLES_COL,
     DEFAULT_CLICKED_ARTICLES_COL,
     DEFAULT_IMPRESSION_ID_COL,
+    DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL
 ]
 
 '''
@@ -174,12 +182,14 @@ df = (
     .pipe(create_binary_labels_column)
 )
 
+print(df)
+
 #============ preprocess data for time deltas============
 # need articles to create mapping
 
 df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
 
-def calculate_and_normalize_time_delta(df_train, df_articles, max_value=1_000_000):
+def calculate_and_normalize_time_delta(df, df_articles, max_value=1_000_000):
     """
     Add a new column to df_train containing normalized time deltas for all in-view articles.
     Negative deltas are set to 0, deltas are capped at max_value, and then normalized to [0, 1].
@@ -217,7 +227,7 @@ def calculate_and_normalize_time_delta(df_train, df_articles, max_value=1_000_00
         return deltas
 
     # Apply the function to compute and normalize time deltas
-    df_train = df_train.with_columns(
+    df = df.with_columns(
         pl.struct(["article_ids_inview", "impression_time"]).apply(
             lambda row: compute_and_normalize_time_deltas(
                 row["article_ids_inview"], row["impression_time"]
@@ -225,13 +235,92 @@ def calculate_and_normalize_time_delta(df_train, df_articles, max_value=1_000_00
         ).alias("time_deltas_normalized")
     )
 
-    return df_train
+    return df
 
 # Call the function
 df = calculate_and_normalize_time_delta(df, df_articles)
-
+print(df)
+print(df.schema)
 
 #=========================================
+
+
+#df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT,"articles.parquet"))
+
+#========================Mapping of published_time directly in DF Train==================================
+
+def map_published_time(df_train, article_df):
+    # Create a mapping of article_id to published_time
+    article_time_mapping = dict(
+        zip(
+            article_df["article_id"].to_list(),
+            article_df["published_time"].to_list()
+        )
+    )
+
+    # Define a helper function to map published times while preserving order
+    def map_article_times(article_ids):
+        return [article_time_mapping.get(article_id, None) for article_id in article_ids]
+    
+    # Apply the mapping function to the `article_id_fixed` column using the helper
+    df_train = df_train.with_columns(
+        pl.col("article_id_fixed").apply(lambda article_ids: map_article_times(article_ids)).alias("published_time_list")
+    )
+    
+    return df_train
+
+# Call the function and assign the result
+
+df = map_published_time(df, df_articles)
+print("=============df train=============")
+print(df)
+print(df.schema)
+#====================================================================================
+
+#========================Calc average recency score for every user==================================
+
+def calculate_time_differences(df):
+    """
+    Calculate the time differences for each article and save them in a list.
+
+    Args:
+        df (pl.DataFrame): The input DataFrame with impression times and published times.
+
+    Returns:
+        pl.DataFrame: Updated DataFrame with a new column containing the time differences as a list.
+    """
+    # Define a helper function to compute time differences for each article
+    def compute_differences(impression_times, published_times):
+        # Ensure the lists have the same length
+        if len(impression_times) != len(published_times):
+            raise ValueError("Impression times and published times must have the same length.")
+        # Calculate the differences for each pair, skipping None values
+        differences = [
+            (imp_time - pub_time).total_seconds() / 60  # Convert to minutes
+            for imp_time, pub_time in zip(impression_times, published_times)
+            if imp_time != dt.datetime(1970, 1, 1, 0, 0) and pub_time is not None
+        ]
+        return differences
+
+    # Apply the helper function to compute differences for each row
+    print("in method")
+    print(df)
+    df = df.with_columns(
+        pl.struct(["impression_time_fixed", "published_time_list"]).apply(
+            lambda row: compute_differences(row["impression_time_fixed"], row["published_time_list"])
+        ).alias("time_differences")
+    )
+
+    return df
+
+
+# Apply the function to your dataframe
+df = calculate_time_differences(df)
+print(df)
+
+
+
+
 # We keep the last 6 days of our training data as the validation set.
 last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=6)
 df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)

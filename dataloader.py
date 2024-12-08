@@ -152,7 +152,7 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
         )
         """
         self.X = self.X.with_columns(
-            self.X["time_deltas_normalized"].alias("history_time_diff")  # Use precomputed normalized values
+            self.X["time_differences"].alias("history_time_diff")  # Use precomputed normalized values
         )
         # self.X = self.X.with_columns(
         #     self.X[self.history_column].apply(

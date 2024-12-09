@@ -78,7 +78,7 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
             on=DEFAULT_USER_COL,
             how="left",
         )
-    )
+    ) 
     return df_behaviors
 
 
@@ -171,13 +171,79 @@ df_articles, cat_cal = concat_str_columns(df_articles, columns=TEXT_COLUMNS_TO_U
 df_articles, token_col_title = convert_text2encoding_with_transformers(
     df_articles, transformer_tokenizer, cat_cal, max_length=MAX_TITLE_LENGTH
 )
-# =>
+
+########### Image embeddings
+
+# Target embedding size (same as text embedding size)
+TARGET_EMBEDDING_SIZE = 30
+
+def resize_embedding(embedding, target_size):
+    if len(embedding) > target_size:
+        return embedding[:target_size]  # Truncate
+    elif len(embedding) < target_size:
+        return embedding + [0.0] * (target_size - len(embedding))  # Pad
+    return embedding
+
+def combine_embeddings(text_embedding, image_embedding, target_size=30):
+    # Convert text_embedding to float
+    text_embedding = [float(x) for x in text_embedding]
+
+    # Truncate or pad both embeddings to half the target size
+    half_size = target_size // 2
+    text_embedding = resize_embedding(text_embedding, half_size)
+    image_embedding = resize_embedding(image_embedding, half_size)
+
+    # Combine by concatenation (results in exactly `target_size`)
+    return text_embedding + image_embedding
+
+# Load data
+df_image_embeddings = pl.read_parquet(PATH.joinpath("image_embeddings.parquet"))
+
+# Ensure the article_id matches between articles and image embeddings
+df_articles = df_articles.join(df_image_embeddings, on="article_id", how="left")
+
+def ensure_valid_embedding(embedding, target_size=1024):
+    # Handle None or empty embeddings
+    if embedding is None:
+        return [0.0] * target_size
+    # Handle Polars Series
+    if isinstance(embedding, pl.Series):
+        # print("Found Polars Series; converting to list.")
+        embedding = embedding.to_list()
+    # Handle other invalid types or lengths
+    if not isinstance(embedding, list) or len(embedding) != target_size:
+        return [0.0] * target_size
+    # If valid, return as is
+    return embedding
+
+# Replace None with zero vector explicitly before applying the function
+df_articles = df_articles.with_columns(
+    pl.when(pl.col("image_embedding").is_null())
+    .then([0.0] * 1024)
+    .otherwise(pl.col("image_embedding"))
+    .alias("image_embedding")
+)
+
+# Apply the function
+df_articles = df_articles.with_columns(
+    pl.col("image_embedding").apply(lambda x: ensure_valid_embedding(x, target_size=1024)).alias("image_embedding")
+)
+
+# Combine text and image embeddings
+df_articles = df_articles.with_columns(
+    pl.struct([token_col_title, "image_embedding"])
+    .apply(lambda row: combine_embeddings(row[token_col_title], row["image_embedding"]))
+    .alias("combined_embedding")
+)
+
+# Image embeddings
 article_mapping = create_article_id_to_value_mapping(
-    df=df_articles, value_col=token_col_title
+    df=df_articles, value_col="combined_embedding"
 )
 
 # =>
 print("Init train- and val-dataloader")
+# Image embeddings
 train_dataloader = NRMSDataLoaderPretransform(
     behaviors=df_train,
     article_dict=article_mapping,
@@ -194,6 +260,8 @@ val_dataloader = NRMSDataLoaderPretransform(
     eval_mode=False,
     batch_size=BATCH_SIZE_VAL,
 )
+
+####################
 
 # CALLBACKS
 tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=LOG_DIR, histogram_freq=1)
@@ -247,106 +315,3 @@ model.model.save_weights(MODEL_WEIGHTS)
 print(f"loading model: {MODEL_WEIGHTS}")
 model.model.load_weights(MODEL_WEIGHTS)
 
-# =>
-# print("Init df_test")
-# df_test = (
-#     ebnerd_from_path(PATH.joinpath("ebnerd_testset", "test"), history_size=HISTORY_SIZE)
-#     .sample(fraction=FRACTION_TEST)
-#     .with_columns(
-#         pl.col(DEFAULT_INVIEW_ARTICLES_COL)
-#         .list.first()
-#         .alias(DEFAULT_CLICKED_ARTICLES_COL)
-#     )
-#     .select(COLUMNS + [DEFAULT_IS_BEYOND_ACCURACY_COL])
-#     .with_columns(
-#         pl.col(DEFAULT_INVIEW_ARTICLES_COL)
-#         .list.eval(pl.element() * 0)
-#         .alias(DEFAULT_LABELS_COL)
-#     )
-# )
-# # Split test in beyond-accuracy. BA samples have more 'article_ids_inview'.
-# df_test_wo_beyond = df_test.filter(~pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
-# df_test_w_beyond = df_test.filter(pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
-
-# df_test_chunks = split_df_chunks(df_test_wo_beyond, n_chunks=N_CHUNKS_TEST)
-# df_pred_test_wo_beyond = []
-
-# for i, df_test_chunk in enumerate(df_test_chunks[CHUNKS_DONE:], start=1 + CHUNKS_DONE):
-#     print(f"Init test-dataloader: {i}/{len(df_test_chunks)}")
-#     # Initialize DataLoader
-#     test_dataloader_wo_b = NRMSDataLoader(
-#         behaviors=df_test_chunk,
-#         article_dict=article_mapping,
-#         unknown_representation="zeros",
-#         history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
-#         eval_mode=True,
-#         batch_size=BATCH_SIZE_TEST_WO_B,
-#     )
-#     # Predict and clear session
-#     scores = model.scorer.predict(test_dataloader_wo_b)
-#     clear_session()
-
-#     # Process the predictions
-#     df_test_chunk = add_prediction_scores(df_test_chunk, scores.tolist()).with_columns(
-#         pl.col("scores")
-#         .map_elements(lambda x: list(rank_predictions_by_score(x)))
-#         .alias("ranked_scores")
-#     )
-
-#     # Save the processed chunk
-#     df_test_chunk.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
-#         TEST_DF_DUMP.joinpath(f"pred_wo_ba_{i}.parquet")
-#     )
-
-#     # Append and clean up
-#     df_pred_test_wo_beyond.append(df_test_chunk)
-
-#     # Cleanup
-#     del df_test_chunk, test_dataloader_wo_b, scores
-#     gc.collect()
-
-# # =>
-# df_pred_test_wo_beyond = pl.concat(df_pred_test_wo_beyond)
-# df_pred_test_wo_beyond.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
-#     TEST_DF_DUMP.joinpath("pred_wo_ba.parquet")
-# )
-
-# print("Init test-dataloader: beyond-accuracy")
-# test_dataloader_w_b = NRMSDataLoader(
-#     behaviors=df_test_w_beyond,
-#     article_dict=article_mapping,
-#     unknown_representation="zeros",
-#     history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
-#     eval_mode=True,
-#     batch_size=BATCH_SIZE_TEST_W_B,
-# )
-# scores = model.scorer.predict(test_dataloader_w_b)
-# df_pred_test_w_beyond = add_prediction_scores(
-#     df_test_w_beyond, scores.tolist()
-# ).with_columns(
-#     pl.col("scores")
-#     .map_elements(lambda x: list(rank_predictions_by_score(x)))
-#     .alias("ranked_scores")
-# )
-# df_pred_test_w_beyond.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
-#     TEST_DF_DUMP.joinpath("pred_w_ba.parquet")
-# )
-
-# # =>
-# df_test = pl.concat([df_pred_test_wo_beyond, df_pred_test_w_beyond])
-# df_test.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
-#     TEST_DF_DUMP.joinpath("pred_concat.parquet")
-# )
-# metrics = MetricEvaluator(
-#     labels=df_validation["labels"].to_list(),
-#     predictions=df_validation["scores"].to_list(),
-#     metric_functions=[AucScore(), MrrScore(), NdcgScore(k=5), NdcgScore(k=10)],
-# )
-# metrics.evaluate()
-
-# write_submission_file(
-#     impression_ids=df_test[DEFAULT_IMPRESSION_ID_COL],
-#     prediction_scores=df_test["ranked_scores"],
-#     path=DUMP_DIR.joinpath("predictions.txt"),
-#     filename_zip=f"{DATASPLIT}_predictions-{MODEL_NAME}.zip",
-# )

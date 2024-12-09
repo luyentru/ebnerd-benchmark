@@ -19,6 +19,7 @@ from ebrec.utils._constants import (
     DEFAULT_LABELS_COL,
     DEFAULT_TITLE_COL,
     DEFAULT_USER_COL,
+    DEFAULT_IMPRESSION_TIMESTAMP_COL,
 )
 
 from ebrec.utils._behaviors import (
@@ -121,11 +122,23 @@ COLUMNS = [
     DEFAULT_INVIEW_ARTICLES_COL,
     DEFAULT_CLICKED_ARTICLES_COL,
     DEFAULT_IMPRESSION_ID_COL,
+    DEFAULT_IMPRESSION_TIMESTAMP_COL,
 ]
 
-df_train = (
-    ebnerd_from_path(PATH.joinpath(DATASPLIT, "train"), history_size=HISTORY_SIZE)
-    .sample(fraction=FRACTION)
+df = (
+    pl.concat(
+        [
+            ebnerd_from_path(
+                PATH.joinpath(DATASPLIT, "train"),
+                history_size=HISTORY_SIZE,
+            ),
+            ebnerd_from_path(
+                PATH.joinpath(DATASPLIT, "validation"),
+                history_size=HISTORY_SIZE,
+            ),
+        ]
+    )
+    .sample(fraction=FRACTION, shuffle=True, seed=SEED)
     .select(COLUMNS)
     .pipe(
         sampling_strategy_wu2019,
@@ -136,25 +149,48 @@ df_train = (
     )
     .pipe(create_binary_labels_column)
 )
-df_validation = (
-    ebnerd_from_path(PATH.joinpath(DATASPLIT, "validation"), history_size=HISTORY_SIZE)
-    .sample(fraction=FRACTION)
-    .select(COLUMNS)
-    .pipe(
-        sampling_strategy_wu2019,
-        npratio=4,
-        shuffle=True,
-        with_replacement=True,
-        seed=SEED,
-    )
-    .pipe(create_binary_labels_column)
-)
+
+print("Available columns:", df.columns)
+
+
+last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=1)
+df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)
+df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= last_dt)
+
+
+# df_train = (
+#     ebnerd_from_path(PATH.joinpath(DATASPLIT, "train"), history_size=HISTORY_SIZE)
+#     .sample(fraction=FRACTION)
+#     .select(COLUMNS)
+#     .pipe(
+#         sampling_strategy_wu2019,
+#         npratio=4,
+#         shuffle=True,
+#         with_replacement=True,
+#         seed=SEED,
+#     )
+#     .pipe(create_binary_labels_column)
+# )
+# df_validation = (
+#     ebnerd_from_path(PATH.joinpath(DATASPLIT, "validation"), history_size=HISTORY_SIZE)
+#     .sample(fraction=FRACTION)
+#     .select(COLUMNS)
+#     .pipe(
+#         sampling_strategy_wu2019,
+#         npratio=4,
+#         shuffle=True,
+#         with_replacement=True,
+#         seed=SEED,
+#     )
+#     .pipe(create_binary_labels_column)
+# )
 #df_train, df_validation = split_df_fraction(df_train, fraction=0.9, seed=SEED, shuffle=False)
 
 # df_test = df_validation
 # df_train = df_train[:100]
 # df_validation = df_validation[:100]
 # df_test = df_test[:100]
+
 df_articles = pl.read_parquet(PATH.joinpath("articles.parquet"))
 
 # =>

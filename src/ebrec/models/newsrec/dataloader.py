@@ -28,6 +28,7 @@ class NewsrecDataLoader(tf.keras.utils.Sequence):
     unknown_representation: str
     eval_mode: bool = False
     batch_size: int = 32
+    history_size: int = 20
     inview_col: str = DEFAULT_INVIEW_ARTICLES_COL
     labels_col: str = DEFAULT_LABELS_COL
     user_col: str = DEFAULT_USER_COL
@@ -86,10 +87,15 @@ class NRMSDataLoader(NewsrecDataLoader):
         pred_input_title:   (samples, npratio, document_dimension)
         batch_y:            (samples, npratio)
         """
+        self.X = self.X.with_columns(
+            self.X["time_differences"].alias("history_time_diff")  # Use precomputed normalized values
+        )
         batch_X = self.X[idx * self.batch_size : (idx + 1) * self.batch_size].pipe(
             self.transform
         )
         batch_y = self.y[idx * self.batch_size : (idx + 1) * self.batch_size]
+        # Dynamically compute the batch size from batch_X
+        batch_size = len(batch_X)  # Number of rows in the batch
         # =>
         if self.eval_mode:
             repeats = np.array(batch_X["n_samples"])
@@ -101,6 +107,13 @@ class NRMSDataLoader(NewsrecDataLoader):
                 matrix=self.lookup_article_matrix,
                 repeats=repeats,
             )
+            # Repeat his_time_diff to match his_input_title
+            his_time_diff = np.repeat(
+                np.array(batch_X["history_time_diff"].to_list(), dtype=float),
+                repeats=repeats,
+                axis=0
+            )
+            his_time_diff = np.expand_dims(his_time_diff, axis=-1)  # Add last dimension
             # =>
             pred_input_title = self.lookup_article_matrix[
                 batch_X[self.inview_col].explode().to_list()
@@ -114,9 +127,11 @@ class NRMSDataLoader(NewsrecDataLoader):
                 batch_X[self.inview_col].to_list()
             ]
             pred_input_title = np.squeeze(pred_input_title, axis=2)
+            his_time_diff = np.array(batch_X["history_time_diff"].to_list(), dtype=np.float32)
+            his_time_diff = np.expand_dims(his_time_diff, axis=-1)  # Add last dimension
 
         his_input_title = np.squeeze(his_input_title, axis=2)
-        return (his_input_title, pred_input_title), batch_y
+        return (his_input_title, his_time_diff, pred_input_title), batch_y
 
 
 @dataclass
@@ -142,21 +157,9 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
             fill_nulls=self.unknown_index,
             drop_nulls=False,
         )
-        # TODO: Add the time difference here (impression time - published time)
-        # might consider normalizing it??
         self.X = self.X.with_columns(
-            self.X[self.history_column].apply(
-                lambda history: np.random.rand(len(history)).tolist()
-            ).alias("history_time_diff")
+            self.X["time_differences"].alias("history_time_diff")  # Use precomputed normalized values
         )
-        # self.X = self.X.with_columns(
-        #     self.X[self.history_column].apply(
-        #         lambda history: [
-        #             self.X.filter(pl.col("article_id") == article_id)["average_diff_minutes"]
-        #             for article_id in history
-        #         ]
-        #     ).alias("history_diff_minutes")
-        # )
 
 
     def __getitem__(self, idx) -> tuple[tuple[np.ndarray], np.ndarray]:
@@ -201,8 +204,8 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
             ]
             pred_input_title = np.squeeze(pred_input_title, axis=2)
             # TODO: Change it to use real values
-            his_time_diff = np.random.uniform(0, 1, size=(batch_size, 20, 1)).astype(np.float32)
-
+            his_time_diff = np.array(batch_X["history_time_diff"].to_list(), dtype=np.float32)
+            his_time_diff = np.expand_dims(his_time_diff, axis=-1)  # Add last dimension
         his_input_title = np.squeeze(his_input_title, axis=2)
 
 

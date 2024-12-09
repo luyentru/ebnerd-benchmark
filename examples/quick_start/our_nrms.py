@@ -18,7 +18,8 @@ from ebrec.utils._constants import (
     DEFAULT_SUBTITLE_COL,
     DEFAULT_LABELS_COL,
     DEFAULT_TITLE_COL,
-    DEFAULT_USER_COL
+    DEFAULT_USER_COL,
+    DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL # added since needed in pre-processing
 )
 
 from ebrec.utils._behaviors import (
@@ -53,7 +54,9 @@ for gpu in gpus:
 # conda activate ./venv/
 # python -i examples/00_quick_start/nrms_ebnerd.py
 
-DEBUG = 1
+DEBUG = 0
+
+# TODO: do an analysis to see how many users have history < HISTORY_SIZE
 
 def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     """
@@ -61,10 +64,16 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     """
     df_history = (
         pl.scan_parquet(path.joinpath("history.parquet"))
-        .select(DEFAULT_USER_COL, DEFAULT_HISTORY_ARTICLE_ID_COL)#, DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL)
+        .select(DEFAULT_USER_COL, DEFAULT_HISTORY_ARTICLE_ID_COL, DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL)
         .pipe(
             truncate_history,
             column=DEFAULT_HISTORY_ARTICLE_ID_COL,
+            history_size=history_size,
+            padding_value=0,
+            enable_warning=False,
+        ).pipe(
+            truncate_history,
+            column=DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL, 
             history_size=history_size,
             padding_value=0,
             enable_warning=False,
@@ -103,14 +112,14 @@ MAX_TITLE_LENGTH = 30
 HISTORY_SIZE = 20
 TITLE_SIZE = 30
 FRACTION = 1.0
-EPOCHS = 1 if DEBUG else 20
+EPOCHS = 1 if DEBUG else 10
 FRACTION_TEST = 1.0
 
 BATCH_SIZE_TRAIN = 32
 BATCH_SIZE_VAL = 32
 BATCH_SIZE_TEST_WO_B = 32
 BATCH_SIZE_TEST_W_B = 4
-N_CHUNKS_TEST = 10
+N_CHUNKS_TEST = 100
 CHUNKS_DONE = 0
 
 class hparams_nrms:
@@ -136,6 +145,7 @@ COLUMNS = [
     DEFAULT_INVIEW_ARTICLES_COL,
     DEFAULT_CLICKED_ARTICLES_COL,
     DEFAULT_IMPRESSION_ID_COL,
+    DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL
 ]
 
 '''
@@ -174,21 +184,141 @@ df = (
     .pipe(create_binary_labels_column)
 )
 
+#============ preprocess data for time deltas============
+# need articles to create mapping
+
+df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
+
+def calculate_and_normalize_time_delta(df, df_articles, max_value=1_000_000):
+    """
+    Add a new column to df_train containing normalized time deltas for all in-view articles.
+    Negative deltas are set to 0, deltas are capped at max_value, and then normalized to [0, 1].
+    
+    Args:
+        df_train (pl.DataFrame): DataFrame containing impression_time and inview_article_ids.
+        df_articles (pl.DataFrame): DataFrame containing article_id and published_time.
+        max_value (float): Maximum value for normalization (default is 1,000,000).
+
+    Returns:
+        pl.DataFrame: Updated df_train with a new column `time_deltas_normalized`.
+    """
+    # Create a mapping of article_id to published_time
+    article_time_mapping = dict(
+        zip(
+            df_articles["article_id"].to_list(),
+            df_articles["published_time"].to_list(),
+        )
+    )
+
+    # Define a helper function to calculate and normalize deltas
+    def compute_and_normalize_time_deltas(inview_article_ids, impression_time):
+        deltas = []
+        for article_id in inview_article_ids:
+            published_time = article_time_mapping.get(article_id)
+            if published_time:
+                # Calculate delta in minutes
+                delta = (impression_time - published_time).total_seconds() / 60
+                # Set negative deltas to 0, cap at max_value, and normalize
+                delta = min(max(delta, 0), max_value)
+                normalized_delta = delta / max_value  # Normalize to [0, 1]
+                deltas.append(normalized_delta)
+            else:
+                deltas.append(None)  # Handle missing published_time
+        return deltas
+
+    # Apply the function to compute and normalize time deltas
+    df = df.with_columns(
+        pl.struct(["article_ids_inview", "impression_time"]).apply(
+            lambda row: compute_and_normalize_time_deltas(
+                row["article_ids_inview"], row["impression_time"]
+            )
+        ).alias("time_deltas_normalized")
+    )
+
+    return df
+
+# Call the function
+df = calculate_and_normalize_time_delta(df, df_articles)
+
+#df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT,"articles.parquet"))
+
+#========================Mapping of published_time directly in DF Train==================================
+
+def map_published_time(df_train, article_df):
+    # Create a mapping of article_id to published_time
+    article_time_mapping = dict(
+        zip(
+            article_df["article_id"].to_list(),
+            article_df["published_time"].to_list()
+        )
+    )
+    # Define a helper function to map published times while preserving order
+    def map_article_times(article_ids):
+        return [article_time_mapping.get(article_id, None) for article_id in article_ids]
+    
+    # Apply the mapping function to the `article_id_fixed` column using the helper
+    df_train = df_train.with_columns(
+        pl.col("article_id_fixed").apply(lambda article_ids: map_article_times(article_ids)).alias("published_time_list")
+    )
+    
+    return df_train
+
+# Call the function and assign the result
+
+df = map_published_time(df, df_articles)
+
+#========================Calc average recency score for every user==================================
+
+def calculate_time_differences(df):
+    """
+    Calculate the time differences for each article and save them in a list.
+
+    Args:
+        df (pl.DataFrame): The input DataFrame with impression times and published times.
+
+    Returns:
+        pl.DataFrame: Updated DataFrame with a new column containing the time differences as a list.
+    """
+    # Define a helper function to compute time differences for each article
+    def compute_differences(impression_times, published_times):
+        # Ensure the lists have the same length
+        if len(impression_times) != len(published_times):
+            raise ValueError("Impression times and published times must have the same length.")
+        # Calculate the differences for each pair, skipping None values
+        differences = [
+            (imp_time - pub_time).total_seconds() / 60 if imp_time != dt.datetime(1970, 1, 1, 0, 0) and pub_time is not None
+            else 0  # Assign 0 if invalid time
+            for imp_time, pub_time in zip(impression_times, published_times)
+        ]
+
+        return differences
+
+    # Apply the helper function to compute differences for each row
+    df = df.with_columns(
+        pl.struct(["impression_time_fixed", "published_time_list"]).apply(
+            lambda row: compute_differences(row["impression_time_fixed"], row["published_time_list"])
+        ).alias("time_differences")
+    )
+
+    return df
+
+
+# Apply the function to your dataframe
+df = calculate_time_differences(df)
 
 # We keep the last 6 days of our training data as the validation set.
-last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=6)
+last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=1)
 df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)
 df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= last_dt)
-df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
+#df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
 
 '''
 Use these subsets for debugging purposes/to test correctness of your code
 '''
 if DEBUG:
     df_train = df_train[:100]
-    df_validation = df_validation[:1000]
+    df_validation = df_validation[:100]
     df_articles = df_articles[:10000]
-
 
 # =>
 TRANSFORMER_MODEL_NAME = "FacebookAI/xlm-roberta-base"
@@ -250,7 +380,6 @@ hist = model.model.fit(
     epochs=EPOCHS,
     callbacks=[tensorboard_callback, early_stopping],
 )
-
 val_dataloader.eval_mode = True
 scores = model.scorer.predict(val_dataloader)
 df_validation = add_prediction_scores(df_validation, scores.tolist()).with_columns(
@@ -264,7 +393,6 @@ metrics = MetricEvaluator(
     metric_functions=[AucScore(), MrrScore(), NdcgScore(k=5), NdcgScore(k=10)],
 )
 print(metrics.evaluate())
-exit()
 
 del (
     transformer_tokenizer,
@@ -299,17 +427,22 @@ df_test = (
         .alias(DEFAULT_LABELS_COL)
     )
 )
+#df_test = df_test[:200]
+df_test = map_published_time(df_test, df_articles)
+df_test = calculate_time_differences(df_test)
 # Split test in beyond-accuracy. BA samples have more 'article_ids_inview'.
 df_test_wo_beyond = df_test.filter(~pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 df_test_w_beyond = df_test.filter(pl.col(DEFAULT_IS_BEYOND_ACCURACY_COL))
 
 if DEBUG:
-    df_test_wo_beyond = df_test_wo_beyond[:10]
-    df_test_w_beyond = df_test_w_beyond[:10]
+    df_test_wo_beyond = df_test_wo_beyond[:200]
+    df_test_w_beyond = df_test_w_beyond[:200]
 
 df_test_chunks = split_df_chunks(df_test_wo_beyond, n_chunks=N_CHUNKS_TEST)
 df_pred_test_wo_beyond = []
 
+#model.scorer.compile()
+print("Available GPUs:", tf.config.list_physical_devices('GPU'))
 for i, df_test_chunk in enumerate(df_test_chunks[CHUNKS_DONE:], start=1 + CHUNKS_DONE):
     print(f"Init test-dataloader: {i}/{len(df_test_chunks)}")
     # Initialize DataLoader
@@ -349,7 +482,6 @@ df_pred_test_wo_beyond = pl.concat(df_pred_test_wo_beyond)
 df_pred_test_wo_beyond.select(DEFAULT_IMPRESSION_ID_COL, "ranked_scores").write_parquet(
     TEST_DF_DUMP.joinpath("pred_wo_ba.parquet")
 )
-
 print("Init test-dataloader: beyond-accuracy")
 test_dataloader_w_b = NRMSDataLoader(
     behaviors=df_test_w_beyond,
@@ -359,6 +491,7 @@ test_dataloader_w_b = NRMSDataLoader(
     eval_mode=True,
     batch_size=BATCH_SIZE_TEST_W_B,
 )
+
 scores = model.scorer.predict(test_dataloader_w_b)
 df_pred_test_w_beyond = add_prediction_scores(
     df_test_w_beyond, scores.tolist()

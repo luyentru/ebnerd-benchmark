@@ -44,10 +44,6 @@ gpus = tf.config.experimental.list_physical_devices("GPU")
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 
-# conda activate ./venv/
-# python -i examples/00_quick_start/nrms_ebnerd.py
-
-
 # Loading user behavior data (history and behaviors)
 def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     """
@@ -75,6 +71,8 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
         )
     )
     return df_behaviors
+
+
 
 
 PATH = Path("/dtu/blackhole/0c/215532/ebnerd_data").expanduser()
@@ -144,31 +142,19 @@ df_validation = (
     )
     .pipe(create_binary_labels_column)
 )
-#df_train, df_validation = split_df_fraction(df_train, fraction=0.9, seed=SEED, shuffle=False)
 
-# df_test = df_validation
-# df_train = df_train[:100]
-# df_validation = df_validation[:100]
-# df_test = df_test[:100]
-df_articles = pl.read_parquet(PATH.joinpath("articles.parquet"))
-
-# Replace the LLaMA model loading and embedding creation with:
-print("Loading pre-computed LLaMA embeddings...")
-EMBEDDINGS_PATH = Path("llama_embeddings").resolve()
-llama_embeddings = np.load(EMBEDDINGS_PATH / "llama_embeddings.npy")
-article_ids = np.load(EMBEDDINGS_PATH / "article_ids.npy")
-
-# Store embedding dimension for model configuration
+llama_embeddings = pl.read_parquet(PATH.joinpath("ebnerd_small/artifacts/meta-llama_Llama-2-7b-hf/title-subtitle-meta-llama_Llama-2-7b-hf.parquet"))
 EMBEDDING_DIM = llama_embeddings.shape[1]
 
-# Update article mapping to use pre-computed LLaMA embeddings
+print(llama_embeddings.columns)
+
 article_mapping = {
-    article_id: embedding 
-    for article_id, embedding in zip(
-        article_ids,
-        llama_embeddings
-    )
+    row["article_id"]: row["title-subtitle-meta-llama/Llama-2-7b-hf"]
+    for row in llama_embeddings.iter_rows(named=True)
 }
+
+#print("Sample article embedding:", next(iter(article_mapping.values())))
+#print("Shape of a sample embedding:", len(next(iter(article_mapping.values()))))
 
 # Update model hyperparameters
 hparams_nrms.embedding_dim = EMBEDDING_DIM
@@ -179,25 +165,29 @@ model = NRMSModel(
     seed=42,
 )
 
-# Initialize dataloaders with pre-computed embeddings
+print("Init train- and val-dataloader")
 train_dataloader = NRMSDataLoaderPretransform(
     behaviors=df_train,
     article_dict=article_mapping,
+    unknown_representation="zeros",
+    history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
+    eval_mode=False,
     batch_size=BATCH_SIZE_TRAIN,
 )
-
 val_dataloader = NRMSDataLoaderPretransform(
     behaviors=df_validation,
     article_dict=article_mapping,
+    unknown_representation="zeros",
+    history_column=DEFAULT_HISTORY_ARTICLE_ID_COL,
+    eval_mode=False,
     batch_size=BATCH_SIZE_VAL,
-    eval_mode=True,
 )
 
-# Create callbacks
-tensorboard_callback = TensorBoard(
-    log_dir=LOG_DIR,
-    histogram_freq=1,
-    update_freq='epoch'
+# CALLBACKS
+tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=LOG_DIR, histogram_freq=1)
+early_stopping = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=2)
+modelcheckpoint = tf.keras.callbacks.ModelCheckpoint(
+    filepath=MODEL_WEIGHTS, save_best_only=True, save_weights_only=True, verbose=1
 )
 
 early_stopping = EarlyStopping(

@@ -303,7 +303,7 @@ def calculate_time_differences(df):
     return df
 
 df = calculate_time_differences(df)
-print(df)
+#print(df)
 
 #===========normalize time_difference =========
 
@@ -319,19 +319,19 @@ df = df.with_columns([
     pl.col("time_differences").apply(normalize_list).alias("normalized_time_differences")
 ])
 
-print(df)
-
-
-
 #====================================
-print(df)
+
+#print(df)
 
 # We keep the last 6 days of our training data as the validation set.
 last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=1)
 df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)
 df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= last_dt)
 #df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
-
+# print("====DF TRAIN========")
+# print(df_train)
+# print("====DF VAL========")
+# print(df_validation)
 '''
 Use these subsets for debugging purposes/to test correctness of your code
 '''
@@ -377,6 +377,22 @@ val_dataloader = NRMSDataLoaderPretransform(
     eval_mode=False,
     batch_size=BATCH_SIZE_VAL,
 )
+for batch in train_dataloader:
+    print("====Training batch shapes:====")
+    print(f"his_input_title: {batch[0][0].shape}")
+    print(f"his_time_diff: {batch[0][1].shape}")
+    print(f"pred_input_title: {batch[0][2].shape}")
+    print(f"pred_time_diff: {batch[0][3].shape}")
+    break
+
+for batch in val_dataloader:
+    print("====Validation batch shapes:====")
+    print(f"his_input_title: {batch[0][0].shape}")
+    print(f"his_time_diff: {batch[0][1].shape}")
+    print(f"pred_input_title: {batch[0][2].shape}")
+    print(f"pred_time_diff: {batch[0][3].shape}")
+    break
+
 
 '''Uncomment/use CALLBACKS this when we have a working algorithm,
     so we can train the model and save it weights
@@ -401,6 +417,13 @@ hist = model.model.fit(
     callbacks=[tensorboard_callback, early_stopping],
 )
 val_dataloader.eval_mode = True
+for batch in val_dataloader:
+    print("====Validation batch shapes:=====")
+    print(f"his_input_title: {batch[0][0].shape}")
+    print(f"his_time_diff: {batch[0][1].shape}")
+    print(f"pred_input_title: {batch[0][2].shape}")
+    print(f"pred_time_diff: {batch[0][3].shape}")
+    break
 scores = model.scorer.predict(val_dataloader)
 df_validation = add_prediction_scores(df_validation, scores.tolist()).with_columns(
         pl.col("scores")

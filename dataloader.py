@@ -176,6 +176,11 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
 
         # Dynamically compute the batch size from batch_X
         batch_size = len(batch_X)  # Number of rows in the batch
+        print("====batch_x====")
+        print(batch_X[self.inview_col])
+        print(batch_X["history_time_diff"].shape)
+        #print(batch_X["history_time_diff"])
+        print(batch_X["pred_time_diff"].shape)
 
         if self.eval_mode:
             repeats = np.array(batch_X["n_samples"])
@@ -192,16 +197,46 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
                 axis=0
             )
             his_time_diff = np.expand_dims(his_time_diff, axis=-1)  # Add last dimension
+            print("====his_input====")
+            print(his_input_title.shape)
+            #print(his_input_title)
+            print("====his_time====")
+            print(his_time_diff.shape)
+
             pred_input_title = self.lookup_article_matrix[
                 batch_X[self.inview_col].explode().to_list()
             ]
+            print("====pred_input_title====")
+            print(pred_input_title.shape)
+            # print("====pred_input_title ouput====")
+            # print(pred_input_title)
 
-            pred_time_diff = np.repeat(
-                np.array(batch_X["pred_time_diff"].to_list(), dtype=float),
-                repeats=repeats,
-                axis=0,
-            )
-            pred_time_diff = np.expand_dims(pred_time_diff, axis=-1)  # Add last dimension
+            pred_time_diff = np.array(batch_X["pred_time_diff"].to_list(), dtype=float)
+            # pred_time_diff = np.repeat(
+            #     np.array(batch_X["pred_time_diff"].to_list(), dtype=float),
+            #     repeats=repeats,
+            #     axis=0,
+            # )
+
+            print("====pred_time_diff====")
+            print(pred_time_diff.shape)
+            B, C = pred_time_diff.shape
+            pred_time_diff = np.reshape(pred_time_diff, (batch_size* C, 1, 1))
+
+            #pred_time_diff = np.expand_dims(pred_time_diff, axis=-1)  # Add last dimension
+            print("====pred_time_diff====")
+            print(pred_time_diff.shape)
+            # print(pred_time_diff)
+           
+            # print("====pred_time_diff2 shape====")
+            # print(pred_time_diff.shape)
+            # print("====pred_time_diff2 output====")
+            # print(pred_time_diff)
+            # print("====pred_time_diff2 output end====")
+            print("=======batch_y======")
+            print(batch_y.shape)
+            #print(batch_y)
+
         else:
             batch_y = np.array(batch_y.to_list())
             his_input_title = self.lookup_article_matrix[

@@ -36,8 +36,9 @@ from ebrec.utils._polars import (
 from ebrec.utils._python import write_submission_file, rank_predictions_by_score
 
 from ebrec.models.newsrec.dataloader import NRMSDataLoader, NRMSDataLoaderPretransform
-from ebrec.models.newsrec.model_config import hparams_nrms
+from ebrec.models.newsrec.model_config import hparams_nrms, hparams_to_dict
 from ebrec.models.newsrec import NRMSModel
+
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 gpus = tf.config.experimental.list_physical_devices("GPU")
@@ -95,9 +96,9 @@ MAX_TITLE_LENGTH = 30
 
 # TODO: MAX_ABSTRACT_LENGTH = 50
 HISTORY_SIZE = 20
-FRACTION = 0.05
+FRACTION = 1
 EPOCHS = 10
-FRACTION_TEST = 0.05
+FRACTION_TEST = 1
 #
 hparams_nrms.history_size = HISTORY_SIZE
 
@@ -144,24 +145,24 @@ df_validation = (
 )
 
 llama_embeddings = pl.read_parquet(PATH.joinpath("ebnerd_small/artifacts/meta-llama_Llama-2-7b-hf/title-subtitle-meta-llama_Llama-2-7b-hf.parquet"))
-EMBEDDING_DIM = llama_embeddings.shape[1]
-
-print(llama_embeddings.columns)
+#EMBEDDING_DIM = llama_embeddings.shape[1]
+EMBEDDING_DIM = 4096
 
 article_mapping = {
     row["article_id"]: row["title-subtitle-meta-llama/Llama-2-7b-hf"]
     for row in llama_embeddings.iter_rows(named=True)
 }
 
-#print("Sample article embedding:", next(iter(article_mapping.values())))
-#print("Shape of a sample embedding:", len(next(iter(article_mapping.values()))))
-
 # Update model hyperparameters
 hparams_nrms.embedding_dim = EMBEDDING_DIM
 
+# convert hparams to dict
+hparams = hparams_to_dict(hparams_nrms)
+
+
 # Create and train model
 model = NRMSModel(
-    hparams=hparams_nrms,
+    hparams=hparams,
     seed=42,
 )
 
@@ -222,18 +223,11 @@ print(metrics.evaluate())
 clear_session()
 
 del (
-    llama_model,
-    llama_tokenizer,
     train_dataloader,
     val_dataloader,
     df_validation,
     df_train,
 )
-
-# After generating embeddings
-del llama_model, llama_tokenizer
-torch.cuda.empty_cache()  # If using GPU
-gc.collect()
 
 print(f"saving model: {MODEL_WEIGHTS}")
 model.model.save_weights(MODEL_WEIGHTS)

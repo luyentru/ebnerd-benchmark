@@ -15,8 +15,10 @@ def print_hparams(hparams_class):
 
 def hparams_to_dict(hparams_class) -> dict:
     params = {}
-    for attr, value in hparams_class.__annotations__.items():
-        params[attr] = getattr(hparams_class, attr)
+    # Include all attributes, not just annotated ones
+    for attr in dir(hparams_class):
+        if not attr.startswith("__") and not callable(getattr(hparams_class, attr)):
+            params[attr] = getattr(hparams_class, attr)
     return params
 
 
@@ -38,7 +40,7 @@ class hparams_naml:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.2
+    dropout: float = 0.5
     learning_rate: float = 1e-4
 
 
@@ -57,7 +59,7 @@ class hparams_lstur:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.2
+    dropout: float = 0.5
     learning_rate: float = 1e-4
 
 
@@ -69,13 +71,13 @@ class hparams_npa:
     # MODEL ARCHITECTURE
     cnn_activation: str = "relu"
     attention_hidden_dim: int = 200
-    user_emb_dim: int = 400
+    user_emb_dim: int = 4096
     filter_num: int = 400
     window_size: int = 3
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.2
+    dropout: float = 0.5
     learning_rate: float = 1e-4
 
 
@@ -90,7 +92,7 @@ class hparams_nrms:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.2
+    dropout: float = 0.5
     learning_rate: float = 1e-4
 
 
@@ -105,7 +107,7 @@ class hparams_nrms_docvec:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.2
+    dropout: float = 0.5
     learning_rate: float = 1e-4
     newsencoder_units_per_layer: list[int] = [512, 512, 512]
     newsencoder_l2_regularization: float = 1e-4

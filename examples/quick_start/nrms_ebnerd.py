@@ -46,7 +46,7 @@ for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
 
 # Loading user behavior data (history and behaviors)
-def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
+def ebnerd_from_path(path: Path, history_size: int = 40) -> pl.DataFrame:
     """
     Load ebnerd - function
     """
@@ -92,7 +92,7 @@ DATASPLIT = "ebnerd_small"
 MAX_TITLE_LENGTH = 30
 
 # TODO: MAX_ABSTRACT_LENGTH = 50
-HISTORY_SIZE = 20
+HISTORY_SIZE = 40
 FRACTION = 1
 EPOCHS = 10
 FRACTION_TEST = 1

@@ -25,7 +25,7 @@ def hparams_to_dict(hparams_class) -> dict:
 class hparams_naml:
     # INPUT DIMENTIONS:
     title_size: int = DEFAULT_TITLE_SIZE
-    history_size: int = 20
+    history_size: int = 40
     body_size: int = DEFAULT_BODY_SIZE
     vert_num: int = 100
     vert_emb_dim: int = 10
@@ -40,14 +40,14 @@ class hparams_naml:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.5
+    dropout: float = 0.3
     learning_rate: float = 1e-4
 
 
 class hparams_lstur:
     # INPUT DIMENTIONS:
     title_size: int = DEFAULT_TITLE_SIZE
-    history_size: int = 20
+    history_size: int = 40
     n_users: int = 50000
     # MODEL ARCHITECTURE
     cnn_activation: str = "relu"
@@ -59,14 +59,14 @@ class hparams_lstur:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.5
+    dropout: float = 0.3
     learning_rate: float = 1e-4
 
 
 class hparams_npa:
     # INPUT DIMENTIONS:
     title_size: int = DEFAULT_TITLE_SIZE
-    history_size: int = 20
+    history_size: int = 40
     n_users: int = 50000
     # MODEL ARCHITECTURE
     cnn_activation: str = "relu"
@@ -77,7 +77,7 @@ class hparams_npa:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.5
+    dropout: float = 0.3
     learning_rate: float = 1e-4
 
 
@@ -92,14 +92,14 @@ class hparams_nrms:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.5
+    dropout: float = 0.3
     learning_rate: float = 1e-4
 
 
 class hparams_nrms_docvec:
     # INPUT DIMENTIONS:
     title_size: int = DEFAULT_DOCUMENT_SIZE
-    history_size: int = 20
+    history_size: int = 40
     # MODEL ARCHITECTURE
     head_num: int = 16
     head_dim: int = 16
@@ -107,7 +107,7 @@ class hparams_nrms_docvec:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.5
+    dropout: float = 0.3
     learning_rate: float = 1e-4
     newsencoder_units_per_layer: list[int] = [512, 512, 512]
     newsencoder_l2_regularization: float = 1e-4

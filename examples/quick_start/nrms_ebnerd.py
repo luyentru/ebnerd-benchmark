@@ -141,6 +141,8 @@ df_validation = (
     .pipe(create_binary_labels_column)
 )
 
+## random change
+
 llama_embeddings = pl.read_parquet(PATH.joinpath("ebnerd_small/artifacts/meta-llama_Llama-2-7b-hf/title-subtitle-meta-llama_Llama-2-7b-hf.parquet"))
 #EMBEDDING_DIM = llama_embeddings.shape[1]
 EMBEDDING_DIM = 4096

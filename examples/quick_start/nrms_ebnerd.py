@@ -73,9 +73,6 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     )
     return df_behaviors
 
-
-
-
 PATH = Path("/dtu/blackhole/0c/215532/ebnerd_data").expanduser()
 DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)

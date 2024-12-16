@@ -5,6 +5,7 @@ import tensorflow as tf
 import datetime as dt
 import polars as pl
 import numpy as np
+from sklearn.decomposition import TruncatedSVD
 import torch
 import gc
 import os
@@ -180,58 +181,94 @@ df_articles, token_col_title = convert_text2encoding_with_transformers(
 
 # Target embedding size (same as text embedding size)
 TARGET_EMBEDDING_SIZE = 30
-# INPUT_DIM = 1024 + 30  # Combined text and image embedding size
+INPUT_DIM = 1024
 
 # # Load data
 df_image_embeddings = pl.read_parquet(PATH.joinpath("image_embeddings.parquet"))
 
-# # Combine and reduce embeddings
-# def train_combined_linear_transform_model(embedding_dataset, input_dim=1054, target_dim=30):
-#     # Input layer
-#     input_layer = Input(shape=(input_dim,))
-#     # Linear transformation layer
-#     output_layer = Dense(target_dim, activation=None)(input_layer)
+########## NEW SVD
 
-#     # Create the model
-#     model = Model(inputs=input_layer, outputs=output_layer)
+# Load and preprocess image embeddings
+valid_embeddings = [
+    emb for emb in df_image_embeddings["image_embedding"].to_list()
+    if emb is not None and len(emb) == 1024 and not all(v == 0.0 for v in emb)
+]
 
-#     # Compile the model
-#     model.compile(optimizer='adam', loss='mse')
+# Convert to NumPy array
+valid_embeddings = np.array(valid_embeddings, dtype=np.float32)
 
-#     # Train on combined embeddings
-#     model.fit(embedding_dataset, np.zeros((len(embedding_dataset), target_dim)), epochs=10, batch_size=32)
+# Apply Truncated SVD
+svd = TruncatedSVD(n_components=30, random_state=42)  # Reduce to 30 dimensions
+reduced_embeddings = svd.fit_transform(valid_embeddings)
 
-#     return model
+# print(f"Original shape: {valid_embeddings.shape}")
+# print(f"Reduced shape: {reduced_embeddings.shape}")
 
-# # Function to combine and reduce embeddings
-# def combine_and_reduce_embeddings(text_embedding, image_embedding):
+# Add reduced embeddings back to the DataFrame
+# Use None for entries that were not processed in SVD
+reduced_embeddings_list = []
+embedding_index = 0
+for emb in df_image_embeddings["image_embedding"]:
+    if emb is not None and len(emb) == 1024 and not all(v == 0.0 for v in emb):
+        reduced_embeddings_list.append(reduced_embeddings[embedding_index].tolist())
+        embedding_index += 1
+    else:
+        reduced_embeddings_list.append([0.0] * 30)  # Replace missing embeddings with zeros
+
+df_image_embeddings = df_image_embeddings.with_columns(
+    pl.Series(name="reduced_image_embedding", values=reduced_embeddings_list)
+)
+
+# Combine text and reduced image embeddings
+df_articles = df_articles.join(df_image_embeddings, on="article_id", how="left")
+
+df_articles = df_articles.with_columns(
+    pl.when(pl.col("reduced_image_embedding").is_null())
+    .then([0.0] * 30)  # Ensure missing embeddings are replaced with a zero vector of length 30
+    .otherwise(pl.col("reduced_image_embedding"))
+    .alias("reduced_image_embedding")
+)
+
+# Updated combine_embeddings function
+def combine_embeddings(text_embedding, image_embedding):
+    """
+    Combines text and image embeddings, ensuring image_embedding is reduced or zeroed.
+    """
+    text_embedding = [float(x) for x in text_embedding]
+    image_embedding = [float(x) for x in image_embedding]  # Ensure consistency in data types
+    assert len(text_embedding) == 30, f"Text embedding size mismatch: {len(text_embedding)}"
+    assert len(image_embedding) == 30, f"Image embedding size mismatch: {len(image_embedding)}"
+    return text_embedding + image_embedding
+
+
+df_articles = df_articles.with_columns(
+    pl.struct([token_col_title, "reduced_image_embedding"])
+    .apply(lambda row: combine_embeddings(row[token_col_title], row["reduced_image_embedding"]))
+    .alias("combined_embedding")
+)
+
+# OLD version with only 15 first indexes used, also use this for a dim of 1054
+# def resize_embedding(embedding, target_size):
+#     if len(embedding) > target_size:
+#         return embedding[:target_size]  # Truncate
+#     elif len(embedding) < target_size:
+#         return embedding + [0.0] * (target_size - len(embedding))  # Pad
+#     return embedding
+
+# Use for 1054 vector version
+# def combine_embeddings(text_embedding, image_embedding, target_size=30):
 #     # Convert text_embedding to float
 #     text_embedding = [float(x) for x in text_embedding]
 
-#     # Ensure valid embedding for image
-#     if len(image_embedding) != 1024:
-#         image_embedding = [0.0] * 1024
+#     # Truncate or pad both embeddings to half the target size
+#     # half_size = target_size // 2
+#     # text_embedding = resize_embedding(text_embedding, half_size)
+#     # image_embedding = resize_embedding(image_embedding, half_size)
 
-#     # Concatenate text and image embeddings
-#     combined_embedding = text_embedding + list(image_embedding)
+#     # Combine by concatenation (results in exactly `target_size`)
+#     return text_embedding + image_embedding
 
-#     # Convert to tensor and reduce dimensionality
-#     reduced_embedding = combined_transform_model.predict(np.array([combined_embedding]), verbose=0)
-#     return reduced_embedding[0]
-
-# # Prepare the combined embedding dataset for training
-# valid_embeddings = [
-#     text_embedding + list(image_embedding)
-#     for text_embedding, image_embedding in zip(df_articles[token_col_title].to_list(), df_image_embeddings["image_embedding"].to_list())
-#     if text_embedding is not None and len(text_embedding) == 30
-#     and image_embedding is not None and len(image_embedding) == 1024 and not all(v == 0.0 for v in image_embedding)
-# ]
-# combined_embedding_dataset = np.array(valid_embeddings)
-
-# # Train the combined transformation model
-# combined_transform_model = train_combined_linear_transform_model(combined_embedding_dataset, INPUT_DIM, TARGET_EMBEDDING_SIZE)
-
-# # Ensure the article_id matches between articles and image embeddings
+# Ensure the article_id matches between articles and image embeddings
 # df_articles = df_articles.join(df_image_embeddings, on="article_id", how="left")
 
 # def ensure_valid_embedding(embedding, target_size=1024):
@@ -256,126 +293,12 @@ df_image_embeddings = pl.read_parquet(PATH.joinpath("image_embeddings.parquet"))
 #     pl.col("image_embedding").apply(lambda x: ensure_valid_embedding(x, target_size=1024)).alias("image_embedding")
 # )
 
-# # Apply the function to combine and reduce embeddings
+# # Combine text and image embeddings
 # df_articles = df_articles.with_columns(
 #     pl.struct([token_col_title, "image_embedding"])
-#     .apply(lambda row: combine_and_reduce_embeddings(row[token_col_title], row["image_embedding"]))
+#     .apply(lambda row: combine_embeddings(row[token_col_title], row["image_embedding"]))
 #     .alias("combined_embedding")
 # )
-
-########## IMPROVED VERSION
-
-# # Target embedding size (same as text embedding size)
-# TARGET_EMBEDDING_SIZE = 30
-# INPUT_DIM = 1024
-
-# # Load data
-# df_image_embeddings = pl.read_parquet(PATH.joinpath("image_embeddings.parquet"))
-
-# # Extract the column containing the embeddings
-# image_embeddings = df_image_embeddings["image_embedding"].to_list()
-# valid_embeddings = [emb for emb in image_embeddings if emb is not None and len(emb) == 1024 and not all(v == 0.0 for v in emb)]
-# embedding_dataset = np.array(valid_embeddings)
-
-# def train_linear_transform_model(embedding_dataset, input_dim=1024, target_dim=15):
-#     # Input layer
-#     input_layer = Input(shape=(input_dim,))
-#     # Linear transformation layer
-#     output_layer = Dense(target_dim, activation=None)(input_layer)
-
-#     # Create the model
-#     model = Model(inputs=input_layer, outputs=output_layer)
-
-#     # Compile the model (no reconstruction; directly optimize for dimensionality reduction)
-#     model.compile(optimizer='adam', loss='mse')
-
-#     # Train on embeddings (X -> reduced X)
-#     model.fit(embedding_dataset, np.zeros((len(embedding_dataset), target_dim)), epochs=10, batch_size=32)
-
-#     return model
-
-# # Ensure you replace this with the actual training dataset for image embeddings
-# # e.g., embedding_dataset = np.array(df_image_embeddings["image_embedding"].to_list())
-# # Train the linear transformation model only once
-# linear_transform_model = train_linear_transform_model(embedding_dataset, INPUT_DIM, TARGET_EMBEDDING_SIZE//2)
-
-# # Function to reduce embedding dimensionality using the trained linear transformation
-# def reduce_embedding_with_linear_transform(embedding):
-#     embedding = tf.convert_to_tensor(embedding, dtype=tf.float32)
-#     reduced_embedding = linear_transform_model.predict(embedding[None, :], verbose=0)
-#     return reduced_embedding[0]
-
-# # Updated combine_embeddings function to include dimensionality reduction
-# def combine_embeddings(text_embedding, image_embedding, target_size=30):
-#     # Convert text_embedding to float
-#     text_embedding = [float(x) for x in text_embedding]
-
-#     # Reduce dimensionality of image embedding to half the target size
-#     half_size = target_size // 2
-#     image_embedding = reduce_embedding_with_linear_transform(image_embedding)
-
-#     # Resize text embedding to match half the target size (truncate or pad)
-#     if len(text_embedding) > half_size:
-#         text_embedding = text_embedding[:half_size]
-#     elif len(text_embedding) < half_size:
-#         text_embedding = text_embedding + [0.0] * (half_size - len(text_embedding))
-
-#     # Combine reduced text and image embeddings
-#     return text_embedding + list(image_embedding)
-
-##########
-
-# OLDDDDDDD
-# def resize_embedding(embedding, target_size):
-#     if len(embedding) > target_size:
-#         return embedding[:target_size]  # Truncate
-#     elif len(embedding) < target_size:
-#         return embedding + [0.0] * (target_size - len(embedding))  # Pad
-#     return embedding
-
-def combine_embeddings(text_embedding, image_embedding, target_size=30):
-    # Convert text_embedding to float
-    text_embedding = [float(x) for x in text_embedding]
-
-    # Truncate or pad both embeddings to half the target size
-    # half_size = target_size // 2
-    # text_embedding = resize_embedding(text_embedding, half_size)
-    # image_embedding = resize_embedding(image_embedding, half_size)
-
-    # Combine by concatenation (results in exactly `target_size`)
-    return text_embedding + image_embedding
-
-# Ensure the article_id matches between articles and image embeddings
-df_articles = df_articles.join(df_image_embeddings, on="article_id", how="left")
-
-def ensure_valid_embedding(embedding, target_size=1024):
-    if embedding is None:
-        return [0.0] * target_size
-    if isinstance(embedding, pl.Series):
-        embedding = embedding.to_list()
-    if not isinstance(embedding, list) or len(embedding) != target_size:
-        return [0.0] * target_size
-    return embedding
-
-# Replace None with zero vector explicitly before applying the function
-df_articles = df_articles.with_columns(
-    pl.when(pl.col("image_embedding").is_null())
-    .then([0.0] * 1024)
-    .otherwise(pl.col("image_embedding"))
-    .alias("image_embedding")
-)
-
-# Apply the function
-df_articles = df_articles.with_columns(
-    pl.col("image_embedding").apply(lambda x: ensure_valid_embedding(x, target_size=1024)).alias("image_embedding")
-)
-
-# Combine text and image embeddings
-df_articles = df_articles.with_columns(
-    pl.struct([token_col_title, "image_embedding"])
-    .apply(lambda row: combine_embeddings(row[token_col_title], row["image_embedding"]))
-    .alias("combined_embedding")
-)
 
 # Image embeddings
 article_mapping = create_article_id_to_value_mapping(

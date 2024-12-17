@@ -44,6 +44,7 @@ from ebrec.utils._python import write_submission_file, rank_predictions_by_score
 from ebrec.models.newsrec.dataloader import NRMSDataLoader, NRMSDataLoaderPretransform
 #from ebrec.models.newsrec.model_config import hparams_nrms
 from ebrec.models.newsrec import NRMSModel
+from helpers import calculate_average_time_difference, map_published_time, calculate_article_age
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 gpus = tf.config.experimental.list_physical_devices("GPU")
@@ -54,7 +55,7 @@ for gpu in gpus:
 # conda activate ./venv/
 # python -i examples/00_quick_start/nrms_ebnerd.py
 
-DEBUG = 0
+DEBUG = 1
 
 # TODO: do an analysis to see how many users have history < HISTORY_SIZE
 
@@ -97,8 +98,8 @@ DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)
 SEED = 42
 
-MODEL_NAME = f"NRMS-{dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}-{SEED}"
-# MODEL_NAME = "NRMS-382861963-2024-11-12 01:34:49.050070"
+DESC = "AVG_TIME_DIFF"
+MODEL_NAME = f"{DESC}_NRMS-{dt.datetime.now().strftime('%Y-%m-%d_%H:%M')}"
 
 MODEL_WEIGHTS = DUMP_DIR.joinpath(f"state_dict/{MODEL_NAME}/weights")
 LOG_DIR = DUMP_DIR.joinpath(f"runs/{MODEL_NAME}")
@@ -135,8 +136,8 @@ class hparams_nrms:
     # MODEL OPTIMIZER:
     optimizer: str = "adam"
     loss: str = "cross_entropy_loss"
-    dropout: float = 0.2
-    learning_rate: float = 1e-4
+    dropout: float = 0.5
+    learning_rate: float = 1e-3
 
 COLUMNS = [
     DEFAULT_IMPRESSION_TIMESTAMP_COL,
@@ -148,16 +149,6 @@ COLUMNS = [
     DEFAULT_HISTORY_IMPRESSION_TIMESTAMP_COL
 ]
 
-'''
-The format of df_train columns = ['user_id', 
-                                'article_id_fixed', 
-                                'article_ids_inview', 
-                                'article_ids_clicked', 
-                                'impression_id', 
-                                'labels']
-'article_id_fixed' size = HISTORY_SIZE
-'article_ids_inview' size = 'labels' size = npratio + 1
-'''
 # We'll use the training + validation sets for training.
 df = (
     pl.concat(
@@ -184,133 +175,32 @@ df = (
     .pipe(create_binary_labels_column)
 )
 
-#============ preprocess data for time deltas============
 # need articles to create mapping
-
-df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
-
-def calculate_and_normalize_time_delta(df, df_articles, max_value=1_000_000):
-    """
-    Add a new column to df_train containing normalized time deltas for all in-view articles.
-    Negative deltas are set to 0, deltas are capped at max_value, and then normalized to [0, 1].
-    
-    Args:
-        df_train (pl.DataFrame): DataFrame containing impression_time and inview_article_ids.
-        df_articles (pl.DataFrame): DataFrame containing article_id and published_time.
-        max_value (float): Maximum value for normalization (default is 1,000,000).
-
-    Returns:
-        pl.DataFrame: Updated df_train with a new column `time_deltas_normalized`.
-    """
-    # Create a mapping of article_id to published_time
-    article_time_mapping = dict(
-        zip(
-            df_articles["article_id"].to_list(),
-            df_articles["published_time"].to_list(),
-        )
-    )
-
-    # Define a helper function to calculate and normalize deltas
-    def compute_and_normalize_time_deltas(inview_article_ids, impression_time):
-        deltas = []
-        for article_id in inview_article_ids:
-            published_time = article_time_mapping.get(article_id)
-            if published_time:
-                # Calculate delta in minutes
-                delta = (impression_time - published_time).total_seconds() / 60
-                # Set negative deltas to 0, cap at max_value, and normalize
-                delta = min(max(delta, 0), max_value)
-                normalized_delta = delta / max_value  # Normalize to [0, 1]
-                deltas.append(normalized_delta)
-            else:
-                deltas.append(None)  # Handle missing published_time
-        return deltas
-
-    # Apply the function to compute and normalize time deltas
-    df = df.with_columns(
-        pl.struct(["article_ids_inview", "impression_time"]).apply(
-            lambda row: compute_and_normalize_time_deltas(
-                row["article_ids_inview"], row["impression_time"]
-            )
-        ).alias("time_deltas_normalized")
-    )
-
-    return df
-
-# Call the function
-df = calculate_and_normalize_time_delta(df, df_articles)
-
-#df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT,"articles.parquet"))
-
-#========================Mapping of published_time directly in DF Train==================================
-
-def map_published_time(df_train, article_df):
-    # Create a mapping of article_id to published_time
-    article_time_mapping = dict(
-        zip(
-            article_df["article_id"].to_list(),
-            article_df["published_time"].to_list()
-        )
-    )
-    # Define a helper function to map published times while preserving order
-    def map_article_times(article_ids):
-        return [article_time_mapping.get(article_id, None) for article_id in article_ids]
-    
-    # Apply the mapping function to the `article_id_fixed` column using the helper
-    df_train = df_train.with_columns(
-        pl.col("article_id_fixed").apply(lambda article_ids: map_article_times(article_ids)).alias("published_time_list")
-    )
-    
-    return df_train
+df_articles = pl.read_parquet(PATH.joinpath("larger_articles.parquet"))
+# # Call the function
+df = calculate_article_age(df, df_articles)
 
 # Call the function and assign the result
-
 df = map_published_time(df, df_articles)
+df = calculate_average_time_difference(df)
+#===========normalize time_difference =========
+global_min = df.select(pl.col("average_time_difference")).min()[0, 0]
+global_max = df.select(pl.col("average_time_difference")).max()[0, 0]
 
-#========================Calc average recency score for every user==================================
+# Handle edge case: if global_min equals global_max, set normalization factor to 0
+if global_max == global_min:
+    raise ValueError("Cannot normalize when all values are the same.")
 
-def calculate_time_differences(df):
-    """
-    Calculate the time differences for each article and save them in a list.
-
-    Args:
-        df (pl.DataFrame): The input DataFrame with impression times and published times.
-
-    Returns:
-        pl.DataFrame: Updated DataFrame with a new column containing the time differences as a list.
-    """
-    # Define a helper function to compute time differences for each article
-    def compute_differences(impression_times, published_times):
-        # Ensure the lists have the same length
-        if len(impression_times) != len(published_times):
-            raise ValueError("Impression times and published times must have the same length.")
-        # Calculate the differences for each pair, skipping None values
-        differences = [
-            (imp_time - pub_time).total_seconds() / 60 if imp_time != dt.datetime(1970, 1, 1, 0, 0) and pub_time is not None
-            else 0  # Assign 0 if invalid time
-            for imp_time, pub_time in zip(impression_times, published_times)
-        ]
-
-        return differences
-
-    # Apply the helper function to compute differences for each row
-    df = df.with_columns(
-        pl.struct(["impression_time_fixed", "published_time_list"]).apply(
-            lambda row: compute_differences(row["impression_time_fixed"], row["published_time_list"])
-        ).alias("time_differences")
-    )
-
-    return df
-
-
-# Apply the function to your dataframe
-df = calculate_time_differences(df)
+# Normalize the "average_time_difference" column using map_elements
+df = df.with_columns(
+    ((pl.col("average_time_difference") - global_min) / (global_max - global_min))
+    .alias("norm_avg_access_time")
+)
 
 # We keep the last 6 days of our training data as the validation set.
 last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=1)
 df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)
 df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= last_dt)
-#df_articles = pl.read_parquet(PATH.joinpath("ebnerd_small/articles.parquet"))
 
 '''
 Use these subsets for debugging purposes/to test correctness of your code
@@ -380,6 +270,7 @@ hist = model.model.fit(
     epochs=EPOCHS,
     callbacks=[tensorboard_callback, early_stopping],
 )
+
 val_dataloader.eval_mode = True
 scores = model.scorer.predict(val_dataloader)
 df_validation = add_prediction_scores(df_validation, scores.tolist()).with_columns(
@@ -403,13 +294,12 @@ del (
     df_train,
 )
 gc.collect()
-
 if not DEBUG:
     print(f"saving model: {MODEL_WEIGHTS}")
     model.model.save_weights(MODEL_WEIGHTS)
     print(f"loading model: {MODEL_WEIGHTS}")
     model.model.load_weights(MODEL_WEIGHTS)
-
+exit()
 # =>
 print("Init df_test")
 df_test = (

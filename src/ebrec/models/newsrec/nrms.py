@@ -153,7 +153,7 @@ class NRMSModel:
 
         # Embed time differences using Time2Vec to encode both linear and periodic components
         # Output shape: (batch_size, history_size, time_embed_dim)
-        time2vec_layer = Time2Vec(embed_dim=100, seed=self.seed)
+        time2vec_layer = Time2Vec(embed_dim=50, seed=self.seed)
         time_embeddings = tf.keras.layers.TimeDistributed(time2vec_layer)(time_diff_input)
 
         # Remove extra dimension added by Time2Vec
@@ -166,7 +166,7 @@ class NRMSModel:
 
         # Concatenate article embeddings with time embeddings along the last axis
         # Combined shape: (batch_size, history_size, embedding_dim + time_embed_dim)
-        combined_embeddings = tf.concat([click_title_presents, time_embeddings], axis=-1)
+        combined_embeddings = tf.concat([click_title_presents, time_attention], axis=-1)
 
         # Apply multi-head self-attention on the combined embeddings
         # Output shape: (batch_size, history_size, attention_hidden_dim)
@@ -175,7 +175,6 @@ class NRMSModel:
         )
 
         user_present = AttLayer2(self.hparams.attention_hidden_dim, seed=self.seed)(y)
-
         # Define the user encoder model
         model = tf.keras.Model([his_input_title, time_diff_input], user_present, name="user_encoder")
         return model
@@ -217,7 +216,7 @@ class NRMSModel:
 
         # Apply several dense layers for further transformation
         for layer in [400, 400, 400]:
-            y = tf.keras.layers.Dense(units=layer, activation="relu")(y)
+            y = tf.keras.layers.Dense(units=layer, activation="relu", kernel_regularizer=l2(1e-3))(y)
             y = tf.keras.layers.BatchNormalization()(y)
             y = tf.keras.layers.Dropout(self.hparams.dropout)(y)
 
@@ -229,18 +228,7 @@ class NRMSModel:
 
 
     def _build_nrms(self) -> tuple[tf.keras.Model, tf.keras.Model]:
-        """
-        Build the complete NRMS model, which consists of a user encoder and a news encoder.
-
-        The NRMS model generates relevance scores for candidate articles based on user history
-        and outputs recommendations.
-
-        Returns:
-            tuple: A tuple containing:
-                - The NRMS model for training and evaluation.
-                - The scorer model for inference (predicting relevance for a single candidate article).
-        """
-        # Inputs for user history and candidate articles
+    # Inputs for user history and candidate articles
         his_input_title = tf.keras.Input(
             shape=(self.hparams.history_size, self.hparams.title_size), dtype="int32"
         )
@@ -248,10 +236,16 @@ class NRMSModel:
             shape=(None, self.hparams.title_size), dtype="int32"  # For multiple candidates
         )
         time_diff_input = tf.keras.Input(
-            shape=(self.hparams.history_size, 1), dtype="float32"
-        )  # Time differences for user history
+            shape=(self.hparams.history_size, 1), dtype="float32"  # Time differences for user history
+        )
+        pred_time_diff_input = tf.keras.Input(
+            shape=(None, 1), dtype="float32"  # Time differences for candidate news
+        )
         pred_input_title_one = tf.keras.Input(
             shape=(1, self.hparams.title_size), dtype="int32"  # For a single candidate
+        )
+        pred_time_diff_input_one = tf.keras.Input(
+            shape=(1, 1), dtype="float32"  # Time difference for a single candidate
         )
 
         # Flatten the single candidate input
@@ -264,23 +258,52 @@ class NRMSModel:
         self.userencoder = self._build_userencoder(titleencoder)
         self.newsencoder = titleencoder
 
-        # Generate user and candidate article representations
+        # Generate user representations
         user_present = self.userencoder([his_input_title, time_diff_input])
-        news_present = tf.keras.layers.TimeDistributed(self.newsencoder)(
-            pred_input_title
-        )
+
+        # Generate candidate news representations
+        news_present = tf.keras.layers.TimeDistributed(self.newsencoder)(pred_input_title)
         news_present_one = self.newsencoder(pred_title_one_reshape)
 
-        # Compute relevance scores between user and candidate articles
-        preds = tf.keras.layers.Dot(axes=-1)([news_present, user_present])
+        # Generate candidate time embeddings
+        time2vec_layer = Time2Vec(embed_dim=50, seed=self.seed)
+        pred_time_embeddings = tf.keras.layers.TimeDistributed(time2vec_layer)(pred_time_diff_input)
+        pred_time_embeddings = tf.squeeze(pred_time_embeddings, axis=-2)
+
+        pred_time_embedding_one = time2vec_layer(pred_time_diff_input_one)
+        pred_time_embedding_one = tf.squeeze(pred_time_embedding_one, axis=[1, 2])  # Remove dimensions 1 and 2
+
+        # Combine candidate news representations with time embeddings
+        combined_news_present = tf.concat([news_present, pred_time_embeddings], axis=-1)
+        combined_news_present_one = tf.concat([news_present_one, pred_time_embedding_one], axis=-1)
+
+        projected_news_present = tf.keras.layers.Dense(
+        #units=self.hparams.attention_hidden_dim,  # Match dimension of user_present (400)
+        units=400,
+        activation="relu"
+        )(combined_news_present)
+        
+        projected_news_present_one = tf.keras.layers.Dense(
+        #units=self.hparams.attention_hidden_dim,  # Match dimension of user_present (400)
+        units=400,
+        activation="relu"
+        )(combined_news_present_one)
+
+        # Compute relevance scores
+        preds = tf.keras.layers.Dot(axes=-1)([projected_news_present, user_present])
         preds = tf.keras.layers.Activation(activation="softmax")(preds)
 
-        # Compute relevance for a single candidate (e.g., for inference)
-        pred_one = tf.keras.layers.Dot(axes=-1)([news_present_one, user_present])
+        pred_one = tf.keras.layers.Dot(axes=-1)([projected_news_present_one, user_present])
         pred_one = tf.keras.layers.Activation(activation="sigmoid")(pred_one)
 
         # Define the NRMS model and scorer model
-        model = tf.keras.Model([his_input_title, time_diff_input, pred_input_title], preds)
-        scorer = tf.keras.Model([his_input_title, time_diff_input, pred_input_title_one], pred_one)
+        model = tf.keras.Model(
+            [his_input_title, time_diff_input, pred_input_title, pred_time_diff_input],
+            preds
+        )
+        scorer = tf.keras.Model(
+            [his_input_title, time_diff_input, pred_input_title_one, pred_time_diff_input_one],
+            pred_one
+        )
 
         return model, scorer

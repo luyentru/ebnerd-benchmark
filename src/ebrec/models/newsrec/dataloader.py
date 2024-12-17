@@ -66,6 +66,7 @@ class NewsrecDataLoader(tf.keras.utils.Sequence):
 
 @dataclass
 class NRMSDataLoader(NewsrecDataLoader):
+    # TODO: Update this dataloader
     def transform(self, df: pl.DataFrame) -> pl.DataFrame:
         return df.pipe(
             map_list_article_id_to_value,
@@ -88,7 +89,8 @@ class NRMSDataLoader(NewsrecDataLoader):
         batch_y:            (samples, npratio)
         """
         self.X = self.X.with_columns(
-            self.X["time_differences"].alias("history_time_diff")  # Use precomputed normalized values
+            self.X["norm_avg_access_time"].alias("history_time_diff"), # user history
+            self.X["article_age_normalized"].alias("pred_time_diff"),  # candidate news
         )
         batch_X = self.X[idx * self.batch_size : (idx + 1) * self.batch_size].pipe(
             self.transform
@@ -158,7 +160,8 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
             drop_nulls=False,
         )
         self.X = self.X.with_columns(
-            self.X["time_differences"].alias("history_time_diff")  # Use precomputed normalized values
+            self.X["norm_avg_access_time"].alias("history_time_diff"), # user history
+            self.X["article_age_normalized"].alias("pred_time_diff"),  # candidate news
         )
 
 
@@ -184,16 +187,19 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
                 matrix=self.lookup_article_matrix,
                 repeats=repeats,
             )
-            # Repeat his_time_diff to match his_input_title
-            his_time_diff = np.repeat(
-                np.array(batch_X["history_time_diff"].to_list(), dtype=float),
-                repeats=repeats,
-                axis=0
-            )
+            his_time_diff = np.array(batch_X["history_time_diff"].to_list(), dtype=np.float32)
+            his_time_diff = np.repeat(his_time_diff[:, np.newaxis], repeats=self.history_size, axis=1)
+            his_time_diff = np.repeat(his_time_diff, repeats=repeats, axis=0)  # Match the repetition of his_input_title
+
             his_time_diff = np.expand_dims(his_time_diff, axis=-1)  # Add last dimension
+
             pred_input_title = self.lookup_article_matrix[
                 batch_X[self.inview_col].explode().to_list()
             ]
+            pred_time_diff = np.array(batch_X["pred_time_diff"].to_list(), dtype=float)
+
+            B, C = pred_time_diff.shape
+            pred_time_diff = np.reshape(pred_time_diff, (batch_size* C, 1, 1))
         else:
             batch_y = np.array(batch_y.to_list())
             his_input_title = self.lookup_article_matrix[
@@ -203,10 +209,13 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
                 batch_X[self.inview_col].to_list()
             ]
             pred_input_title = np.squeeze(pred_input_title, axis=2)
-            # TODO: Change it to use real values
             his_time_diff = np.array(batch_X["history_time_diff"].to_list(), dtype=np.float32)
-            his_time_diff = np.expand_dims(his_time_diff, axis=-1)  # Add last dimension
+            his_time_diff = np.repeat(his_time_diff[:, np.newaxis], repeats=self.history_size, axis=1)
+
+            pred_time_diff = np.array(batch_X["pred_time_diff"].to_list(), dtype=np.float32)
+            pred_time_diff = np.expand_dims(pred_time_diff, axis=-1)  # Add last dimension
+
         his_input_title = np.squeeze(his_input_title, axis=2)
 
 
-        return (his_input_title, his_time_diff, pred_input_title), batch_y
+        return (his_input_title, his_time_diff, pred_input_title, pred_time_diff), batch_y

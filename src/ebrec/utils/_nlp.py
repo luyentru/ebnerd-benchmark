@@ -14,8 +14,12 @@ except ImportError:
     print("transformers not available")
 
 
-def get_transformers_word_embeddings(model: AutoModel):
-    return model.embeddings.word_embeddings.weight.data.to("cpu").numpy()
+def get_transformers_word_embeddings(model) -> np.ndarray:
+    """Get embeddings from Llama model"""
+    embedding_layer = model.get_input_embeddings()
+    embeddings = embedding_layer.weight.detach().cpu().numpy()
+    return embeddings
+
 
 
 def generate_embeddings_with_transformers(

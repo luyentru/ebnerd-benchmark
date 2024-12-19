@@ -30,53 +30,22 @@ def create_article_id_to_value_mapping(
 
 def convert_text2encoding_with_transformers(
     df: pl.DataFrame,
-    tokenizer: AutoTokenizer,
-    column: str,
-    max_length: int = None,
-) -> pl.DataFrame:
-    """Converts text in a specified DataFrame column to tokens using a provided tokenizer.
-    Args:
-        df (pl.DataFrame): The input DataFrame containing the text column.
-        tokenizer (AutoTokenizer): The tokenizer to use for encoding the text. (from transformers import AutoTokenizer)
-        column (str): The name of the column containing the text.
-        max_length (int, optional): The maximum length of the encoded tokens. Defaults to None.
-    Returns:
-        pl.DataFrame: A new DataFrame with an additional column containing the encoded tokens.
-    Example:
-    >>> from transformers import AutoTokenizer
-    >>> import polars as pl
-    >>> df = pl.DataFrame({
-            'text': ['This is a test.', 'Another test string.', 'Yet another one.']
-        })
-    >>> tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-    >>> encoded_df, new_column = convert_text2encoding_with_transformers(df, tokenizer, 'text', max_length=20)
-    >>> print(encoded_df)
-        shape: (3, 2)
-        ┌──────────────────────┬───────────────────────────────┐
-        │ text                 ┆ text_encode_bert-base-uncased │
-        │ ---                  ┆ ---                           │
-        │ str                  ┆ list[i64]                     │
-        ╞══════════════════════╪═══════════════════════════════╡
-        │ This is a test.      ┆ [2023, 2003, … 0]             │
-        │ Another test string. ┆ [2178, 3231, … 0]             │
-        │ Yet another one.     ┆ [2664, 2178, … 0]             │
-        └──────────────────────┴───────────────────────────────┘
-    >>> print(new_column)
-        text_encode_bert-base-uncased
-    """
-    text = df[column].to_list()
-    # set columns
-    new_column = f"{column}_encode_{tokenizer.name_or_path}"
-    # If 'max_length' is provided then set it, else encode each string its original length
-    padding = "max_length" if max_length else False
-    encoded_tokens = tokenizer(
-        text,
-        add_special_tokens=False,
-        padding=padding,
-        max_length=max_length,
-        truncation=True,
-    )["input_ids"]
-    return df.with_columns(pl.Series(new_column, encoded_tokens)), new_column
+    tokenizer,
+    text_column: str,
+    max_length: int = 30,
+) -> tuple[pl.DataFrame, str]:
+    """Adjust for Llama's tokenization peculiarities"""
+    def encode_text(text):
+        # Llama needs special handling for BOS/EOS tokens
+        encoded = tokenizer(
+            text,
+            max_length=max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="np"
+        )
+        return encoded["input_ids"][0].tolist()
+
 
 
 def create_sort_based_prediction_score(

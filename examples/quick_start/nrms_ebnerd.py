@@ -110,9 +110,9 @@ FRACTION_TEST = 0.001
 #
 hparams_nrms.history_size = HISTORY_SIZE
 
-BATCH_SIZE_TRAIN = 16
-BATCH_SIZE_VAL = 16
-BATCH_SIZE_TEST_WO_B = 16
+BATCH_SIZE_TRAIN = 2
+BATCH_SIZE_VAL = 2
+BATCH_SIZE_TEST_WO_B = 2
 BATCH_SIZE_TEST_W_B = 2
 N_CHUNKS_TEST = 10
 CHUNKS_DONE = 0
@@ -191,21 +191,16 @@ df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= 
 df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT, "articles.parquet"))
 
 # =>
-TRANSFORMER_MODEL_NAME = "meta-llama/Llama-3.1-8B"
+TRANSFORMER_MODEL_NAME = "meta-llama/Meta-Llama-3.1-8B" # changed
 TEXT_COLUMNS_TO_USE = [DEFAULT_SUBTITLE_COL, DEFAULT_TITLE_COL]
-
-rope_config = {
-    "type": "dynamic",  # or "linear" depending on what you need
-    "factor": 4.0  # This is a common scaling factor
-}
 
 # LOAD HUGGINGFACE:
 transformer_model = AutoModelForCausalLM.from_pretrained(
     TRANSFORMER_MODEL_NAME,
     token=True,
-    torch_dtype=torch.bfloat16,  # Use half precision to save memory
+    torch_dtype=torch.float16,  # Use half precision to save memory
     device_map="auto",  # Automatically handle model splitting across GPUs
-    rope_scaling=rope_config
+    offload_folder="offload_to_cpu",
 )
 
 transformer_tokenizer = AutoTokenizer.from_pretrained(
@@ -220,6 +215,10 @@ word2vec_embedding = get_transformers_word_embeddings(transformer_model)
 df_articles, cat_cal = concat_str_columns(df_articles, columns=TEXT_COLUMNS_TO_USE)
 df_articles, token_col_title = convert_text2encoding_with_transformers(
     df_articles, transformer_tokenizer, cat_cal, max_length=MAX_TITLE_LENGTH
+)
+# =>
+article_mapping = create_article_id_to_value_mapping(
+    df=df_articles, value_col=token_col_title
 )
 
 #=====================Weight Calculation=================================

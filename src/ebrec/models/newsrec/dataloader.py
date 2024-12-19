@@ -142,6 +142,10 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
             fill_nulls=self.unknown_index,
             drop_nulls=False,
         )
+        self.X = self.X.with_columns(
+        #self.X["normalized_avg_access_time"].alias("history_time_diff"),  # Use precomputed normalized values
+        self.X["article_age_normalized"].alias("article_age_norm")
+        )
 
     def __getitem__(self, idx) -> tuple[tuple[np.ndarray], np.ndarray]:
         """
@@ -166,6 +170,11 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
             pred_input_title = self.lookup_article_matrix[
                 batch_X[self.inview_col].explode().to_list()
             ]
+            print("~~~~~~~~~~~pred_input_title:", pred_input_title.shape)
+            article_age_norm = np.array(
+                batch_X["article_age_norm"].explode().to_list(), dtype=float
+            )
+            print("~~~~~~~~~~~article_age_norm:", article_age_norm.shape)
         else:
             batch_y = np.array(batch_y.to_list())
             his_input_title = self.lookup_article_matrix[
@@ -175,6 +184,12 @@ class NRMSDataLoaderPretransform(NewsrecDataLoader):
                 batch_X[self.inview_col].to_list()
             ]
             pred_input_title = np.squeeze(pred_input_title, axis=2)
+            article_age_norm = np.array(batch_X["article_age_norm"].to_list(), dtype=np.float32)
 
         his_input_title = np.squeeze(his_input_title, axis=2)
-        return (his_input_title, pred_input_title), batch_y
+        return (his_input_title, pred_input_title, article_age_norm), batch_y
+
+
+
+
+

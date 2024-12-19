@@ -53,30 +53,6 @@ class NRMSModel:
         )
         self.model.compile(loss=data_loss, optimizer=train_optimizer)
 
-
-    def _get_positional_encoding(self, position, embed_dim):
-        """Generate sinusoidal positional encodings.
-
-        Args:
-            position (int): Maximum sequence length.
-            embed_dim (int): Embedding dimension.
-
-        Returns:
-            tf.Tensor: A tensor of shape (position, embed_dim) with positional encodings.
-        """
-        # Ensure consistent dtypes by casting tf.range to tf.float32
-        angle_rads = tf.cast(tf.range(position)[:, tf.newaxis], tf.float32) / tf.pow(
-            10000.0, (2 * (tf.cast(tf.range(embed_dim // 2)[tf.newaxis, :], tf.float32))) / tf.cast(embed_dim, tf.float32)
-        )
-        # Apply sin to even indices
-        sines = tf.math.sin(angle_rads)
-        # Apply cos to odd indices
-        cosines = tf.math.cos(angle_rads)
-        # Concatenate sin and cos along the last axis
-        positional_encoding = tf.concat([sines, cosines], axis=-1)
-        return positional_encoding
-
-
     def _get_loss(self, loss: str):
         """Make loss function, consists of data loss and regularization loss
         Returns:
@@ -89,7 +65,6 @@ class NRMSModel:
         else:
             raise ValueError(f"this loss not defined {loss}")
         return data_loss
-
 
     def _get_opt(self, optimizer: str, lr: float):
         """Get the optimizer according to configuration. Usually we will use Adam.
@@ -158,13 +133,6 @@ class NRMSModel:
         )
         embedded_sequences_title = embedding_layer(sequences_input_title)
 
-        # generate positional encodings
-        positional_encoding = self._get_positional_encoding(
-            self.hparams.title_size, self.word2vec_embedding.shape[1]
-        )
-        positional_encoding = tf.cast(positional_encoding, dtype=embedded_sequences_title.dtype)
-        embedded_sequences_title += positional_encoding[: tf.shape(embedded_sequences_title)[1], :]
-
         y = tf.keras.layers.Dropout(self.hparams.dropout)(embedded_sequences_title)
         y = SelfAttention(self.hparams.head_num, self.hparams.head_dim, seed=self.seed)(
             [y, y, y]
@@ -182,7 +150,7 @@ class NRMSModel:
         model = tf.keras.Model(sequences_input_title, pred_title, name="news_encoder")
         return model
 
-    def _build_nrms(self):
+    def _build_nrms(self):     
         """The main function to create NRMS's logic. The core of NRMS
         is a user encoder and a news encoder.
 
@@ -195,6 +163,13 @@ class NRMSModel:
             shape=(self.hparams.history_size, self.hparams.title_size),
             dtype="int32",
         )
+
+        article_age_norm = tf.keras.Input(
+            shape=(None,), dtype="float32"  # Normalized article age
+        )
+
+        article_age_norm_one = tf.keras.Input(shape=(1,))                  # single age
+
         pred_input_title = tf.keras.Input(
             # shape = (hparams.npratio + 1, hparams.title_size)
             shape=(None, self.hparams.title_size),
@@ -221,12 +196,24 @@ class NRMSModel:
         news_present_one = self.newsencoder(pred_title_one_reshape)
 
         preds = tf.keras.layers.Dot(axes=-1)([news_present, user_present])
-        preds = tf.keras.layers.Activation(activation="softmax")(preds)
+        lambda_decay = 0.8  # Hyperparameter for decay (adjust based on your needs)
+        penalty_factor = tf.math.exp(-lambda_decay * article_age_norm)  # (batch_size, num_candidates)
+        print("~~~~~~~pen fact",penalty_factor)
+        # Apply penalty factor to relevance scores
+        penalized_scores = preds * penalty_factor
+        preds = tf.keras.layers.Activation(activation="softmax")(penalized_scores)
+
+        print("article_age_norm:", article_age_norm.shape)
+        #article_age_norm_one = article_age_norm[:, 0:1]
 
         pred_one = tf.keras.layers.Dot(axes=-1)([news_present_one, user_present])
-        pred_one = tf.keras.layers.Activation(activation="sigmoid")(pred_one)
+        print("~~~~~~~~~article_age_norm_one:", article_age_norm_one.shape)
+        single_penalty_factor = tf.math.exp(-lambda_decay * article_age_norm_one)  # (batch_size,)
+        print("~~~~~~sing pen fact",single_penalty_factor)
+        penalized_pred_one = pred_one * single_penalty_factor
+        pred_one = tf.keras.layers.Activation(activation="sigmoid")(penalized_pred_one)
 
-        model = tf.keras.Model([his_input_title, pred_input_title], preds)
-        scorer = tf.keras.Model([his_input_title, pred_input_title_one], pred_one)
+        model = tf.keras.Model([his_input_title, pred_input_title, article_age_norm], preds)
+        scorer = tf.keras.Model([his_input_title, pred_input_title_one, article_age_norm_one], pred_one)
 
         return model, scorer

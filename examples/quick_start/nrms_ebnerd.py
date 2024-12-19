@@ -1,5 +1,5 @@
 from tensorflow.keras.backend import clear_session
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
 import tensorflow as tf
 import datetime as dt
@@ -84,7 +84,7 @@ def ebnerd_from_path(path: Path, history_size: int = 30) -> pl.DataFrame:
     return df_behaviors
 
 
-PATH = Path("../../ebnerd_data").expanduser()
+PATH = Path("../../../ebnerd_data").expanduser()
 DUMP_DIR = Path("ebnerd_predictions").resolve()
 DUMP_DIR.mkdir(exist_ok=True, parents=True)
 SEED = 42
@@ -126,9 +126,20 @@ COLUMNS = [
     DEFAULT_IMPRESSION_TIMESTAMP_COL # needed for article age
 ]
 
-df_train = (
-    ebnerd_from_path(PATH.joinpath(DATASPLIT, "train"), history_size=HISTORY_SIZE)
-    .sample(fraction=FRACTION)
+df = (
+    pl.concat(
+        [
+            ebnerd_from_path(
+                PATH.joinpath(DATASPLIT, "train"),
+                history_size=HISTORY_SIZE,
+            ),
+            ebnerd_from_path(
+                PATH.joinpath(DATASPLIT, "validation"),
+                history_size=HISTORY_SIZE,
+            ),
+        ]
+    )
+    .sample(fraction=FRACTION, shuffle=True, seed=SEED)
     .select(COLUMNS)
     .pipe(
         sampling_strategy_wu2019,
@@ -139,34 +150,64 @@ df_train = (
     )
     .pipe(create_binary_labels_column)
 )
-df_validation = (
-    ebnerd_from_path(PATH.joinpath(DATASPLIT, "validation"), history_size=HISTORY_SIZE)
-    .sample(fraction=FRACTION)
-    .select(COLUMNS)
-    .pipe(
-        sampling_strategy_wu2019,
-        npratio=4,
-        shuffle=True,
-        with_replacement=True,
-        seed=SEED,
-    )
-    .pipe(create_binary_labels_column)
-)
+
+last_dt = df[DEFAULT_IMPRESSION_TIMESTAMP_COL].dt.date().max() - dt.timedelta(days=1)
+df_train = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() < last_dt)
+df_validation = df.filter(pl.col(DEFAULT_IMPRESSION_TIMESTAMP_COL).dt.date() >= last_dt)
+
+# df_train = (
+#     ebnerd_from_path(PATH.joinpath(DATASPLIT, "train"), history_size=HISTORY_SIZE)
+#     .sample(fraction=FRACTION)
+#     .select(COLUMNS)
+#     .pipe(
+#         sampling_strategy_wu2019,
+#         npratio=4,
+#         shuffle=True,
+#         with_replacement=True,
+#         seed=SEED,
+#     )
+#     .pipe(create_binary_labels_column)
+# )
+# df_validation = (
+#     ebnerd_from_path(PATH.joinpath(DATASPLIT, "validation"), history_size=HISTORY_SIZE)
+#     .sample(fraction=FRACTION)
+#     .select(COLUMNS)
+#     .pipe(
+#         sampling_strategy_wu2019,
+#         npratio=4,
+#         shuffle=True,
+#         with_replacement=True,
+#         seed=SEED,
+#     )
+#     .pipe(create_binary_labels_column)
+# )
 #df_train, df_validation = split_df_fraction(df_train, fraction=0.9, seed=SEED, shuffle=False)
 
 # df_test = df_validation
 # df_train = df_train[:100]
 # df_validation = df_validation[:100]
 # df_test = df_test[:100]
+
 df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT, "articles.parquet"))
 
 # =>
-TRANSFORMER_MODEL_NAME = "FacebookAI/xlm-roberta-base"
+TRANSFORMER_MODEL_NAME = "meta-llama/Llama-3.1-8B"
 TEXT_COLUMNS_TO_USE = [DEFAULT_SUBTITLE_COL, DEFAULT_TITLE_COL]
 
 # LOAD HUGGINGFACE:
-transformer_model = AutoModel.from_pretrained(TRANSFORMER_MODEL_NAME)
-transformer_tokenizer = AutoTokenizer.from_pretrained(TRANSFORMER_MODEL_NAME)
+transformer_model = AutoModelForCausalLM.from_pretrained(
+    TRANSFORMER_MODEL_NAME,
+    use_auth_token=True,
+    torch_dtype=torch.float16,  # Use half precision to save memory
+    device_map="auto"  # Automatically handle model splitting across GPUs
+)
+
+transformer_tokenizer = AutoTokenizer.from_pretrained(
+    TRANSFORMER_MODEL_NAME,
+)
+
+if transformer_tokenizer.pad_token is None:
+    transformer_tokenizer.pad_token = transformer_tokenizer.eos_token
 
 word2vec_embedding = get_transformers_word_embeddings(transformer_model)
 #
@@ -177,11 +218,11 @@ df_articles, token_col_title = convert_text2encoding_with_transformers(
 
 #=====================Weight Calculation=================================
 
-df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT,"articles.parquet"))
-df_articles, cat_cal = concat_str_columns(df_articles, columns=TEXT_COLUMNS_TO_USE)
-df_articles, token_col_title = convert_text2encoding_with_transformers(
-    df_articles, transformer_tokenizer, cat_cal, max_length=MAX_TITLE_LENGTH
-)
+# df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT,"articles.parquet"))
+# df_articles, cat_cal = concat_str_columns(df_articles, columns=TEXT_COLUMNS_TO_USE)
+# df_articles, token_col_title = convert_text2encoding_with_transformers(
+#     df_articles, transformer_tokenizer, cat_cal, max_length=MAX_TITLE_LENGTH
+# )
 
 
 def calculate_article_age(df, df_articles, max_value=1_000_000):
@@ -348,12 +389,12 @@ model = NRMSModel(
     seed=42,
 )
 
-# hist = model.model.fit(
-#     train_dataloader,
-#     validation_data=val_dataloader,
-#     epochs=EPOCHS,
-#     callbacks=[tensorboard_callback, early_stopping],
-# )
+hist = model.model.fit(
+    train_dataloader,
+    validation_data=val_dataloader,
+    epochs=EPOCHS,
+    callbacks=[tensorboard_callback, early_stopping],
+)
 
 # Process the predictions
 val_dataloader.eval_mode=True

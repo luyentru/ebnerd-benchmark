@@ -194,12 +194,18 @@ df_articles = pl.read_parquet(PATH.joinpath(DATASPLIT, "articles.parquet"))
 TRANSFORMER_MODEL_NAME = "meta-llama/Llama-3.1-8B"
 TEXT_COLUMNS_TO_USE = [DEFAULT_SUBTITLE_COL, DEFAULT_TITLE_COL]
 
+rope_config = {
+    "type": "dynamic",  # or "linear" depending on what you need
+    "factor": 4.0  # This is a common scaling factor
+}
+
 # LOAD HUGGINGFACE:
 transformer_model = AutoModelForCausalLM.from_pretrained(
     TRANSFORMER_MODEL_NAME,
-    use_auth_token=True,
-    torch_dtype=torch.float16,  # Use half precision to save memory
-    device_map="auto"  # Automatically handle model splitting across GPUs
+    token=True,
+    torch_dtype=torch.bfloat16,  # Use half precision to save memory
+    device_map="auto",  # Automatically handle model splitting across GPUs
+    rope_scaling=rope_config
 )
 
 transformer_tokenizer = AutoTokenizer.from_pretrained(

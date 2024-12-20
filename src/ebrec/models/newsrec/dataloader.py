@@ -78,33 +78,41 @@ class NRMSDataLoader(NewsrecDataLoader):
             mapping=self.lookup_article_index,
             fill_nulls=self.unknown_index,
             drop_nulls=False,
+        ).with_columns(
+            df["article_age_normalized"].alias("article_age_norm")  # Add normalized article age
         )
 
     def __getitem__(self, idx) -> tuple[tuple[np.ndarray], np.ndarray]:
         """
+        Fetch and process a batch of data, including additional article_age_norm information.
         his_input_title:    (samples, history_size, document_dimension)
         pred_input_title:   (samples, npratio, document_dimension)
+        article_age_norm:   (samples, npratio)
         batch_y:            (samples, npratio)
         """
+        # Fetch and transform the batch
         batch_X = self.X[idx * self.batch_size : (idx + 1) * self.batch_size].pipe(
             self.transform
         )
         batch_y = self.y[idx * self.batch_size : (idx + 1) * self.batch_size]
-        # =>
+
+        # Evaluation Mode
         if self.eval_mode:
             repeats = np.array(batch_X["n_samples"])
-            # =>
             batch_y = np.array(batch_y.explode().to_list()).reshape(-1, 1)
-            # =>
             his_input_title = repeat_by_list_values_from_matrix(
                 batch_X[self.history_column].to_list(),
                 matrix=self.lookup_article_matrix,
                 repeats=repeats,
             )
-            # =>
             pred_input_title = self.lookup_article_matrix[
                 batch_X[self.inview_col].explode().to_list()
             ]
+            article_age_norm = np.array(
+                batch_X["article_age_norm"].explode().to_list(), dtype=float
+            )
+
+        # Training Mode
         else:
             batch_y = np.array(batch_y.to_list())
             his_input_title = self.lookup_article_matrix[
@@ -114,9 +122,17 @@ class NRMSDataLoader(NewsrecDataLoader):
                 batch_X[self.inview_col].to_list()
             ]
             pred_input_title = np.squeeze(pred_input_title, axis=2)
+            article_age_norm = np.array(
+                batch_X["article_age_norm"].to_list(), dtype=np.float32
+            )
 
+        # Squeeze history input for consistency
         his_input_title = np.squeeze(his_input_title, axis=2)
-        return (his_input_title, pred_input_title), batch_y
+
+        # Return tuple including the additional article_age_norm feature
+        return (his_input_title, pred_input_title, article_age_norm), batch_y
+
+
 
 
 @dataclass

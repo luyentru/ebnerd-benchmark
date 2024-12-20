@@ -31,20 +31,22 @@ def create_article_id_to_value_mapping(
 def convert_text2encoding_with_transformers(
     df: pl.DataFrame,
     tokenizer,
-    text_column: str,
-    max_length: int = 30,
+    column: str,
+    max_length: int = 50,
 ) -> tuple[pl.DataFrame, str]:
-    """Adjust for Llama's tokenization peculiarities"""
-    def encode_text(text):
-        # Llama needs special handling for BOS/EOS tokens
-        encoded = tokenizer(
-            text,
-            max_length=max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="np"
-        )
-        return encoded["input_ids"][0].tolist()
+    #### This has been changed to fit for llama-2-7b
+    text = df[column].to_list()
+    new_column = f"{column}_encode_{tokenizer.name_or_path}"
+    encoded_tokens = tokenizer(
+        text,
+        add_special_tokens=True, #CHANGED TO TRUE FOR LLAMA
+        padding="max_length" if max_length else False, # INCLUDED CODE INTO ARGS
+        max_length=max_length,
+        truncation=True,
+        return_tensors=None,
+    )["input_ids"]
+
+    return df.with_columns(pl.Series(new_column, encoded_tokens)), new_column
 
 
 
